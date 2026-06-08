@@ -1,0 +1,35 @@
+{
+  "name": "vidpocket",
+  "version": "0.4.3",
+  "private": false,
+  "description": "A local-first Chrome webpage video downloader for directly accessible media resources and unencrypted HLS streams.",
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check src/background.js && node --check src/content.js && node --check src/popup.js && node --check helper/vidpocket-helper.mjs",
+    "test": "npm run check && node tests/background-unit.mjs && node tests/popup-match-unit.mjs && node tests/hls-unit.mjs"
+  },
+  "keywords": [
+    "vidpocket",
+    "chrome-extension",
+    "chrome-video-downloader",
+    "web-video-downloader",
+    "webpage-video-downloader",
+    "page-video-downloader",
+    "media",
+    "video",
+    "video-downloader",
+    "m3u8",
+    "m3u8-downloader",
+    "hls",
+    "hls-downloader",
+    "ffmpeg",
+    "manifest-v3",
+    "视频口袋",
+    "网页视频下载",
+    "页面视频下载",
+    "网页视频保存"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

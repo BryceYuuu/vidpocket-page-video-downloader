@@ -1,0 +1,15 @@
+.DS_Store
+node_modules/
+npm-debug.log*
+
+*.crx
+*.pem
+*.zip
+
+dist/
+build/
+coverage/
+
+*.part.mp4
+helper.log
+helper.err.log

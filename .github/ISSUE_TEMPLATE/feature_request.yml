@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a supported VidPocket improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests must stay within VidPocket's scope: directly accessible, unprotected media only.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should VidPocket do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Detection
+        - HLS handling
+        - Popup UI
+        - Helper installation
+        - Documentation
+        - Tests
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a supported VidPocket issue
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please do not use this template for DRM, platform bypass, or protected-media requests.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the shortest steps that reproduce the issue.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VidPocket version
+      placeholder: "0.4.3"
+    validations:
+      required: true
+  - type: input
+    id: chrome
+    attributes:
+      label: Browser version
+      placeholder: "Chrome 137"
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Add helper logs, screenshots, or console messages if available.

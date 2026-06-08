@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VidPocket</title>
+    <link rel="stylesheet" href="src/popup.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>VidPocket</h1>
+        <p id="status">正在扫描当前页面</p>
+      </div>
+      <div class="toolbar">
+        <button id="refresh" type="button" title="重新扫描" aria-label="重新扫描">刷新</button>
+        <button id="clear" type="button" title="清空当前页面记录" aria-label="清空当前页面记录">清空</button>
+      </div>
+    </header>
+
+    <main>
+      <ul id="items" class="items"></ul>
+      <div id="empty" class="empty" hidden>
+        <strong>未发现可直接下载的视频</strong>
+        <span>播放页面视频后再刷新试试。</span>
+      </div>
+    </main>
+
+    <template id="item-template">
+      <li class="item">
+        <button class="remove" type="button" title="从列表移除" aria-label="从列表移除">×</button>
+        <div class="thumb">
+          <video class="thumb-video" muted playsinline preload="metadata"></video>
+          <img alt="" class="thumb-img">
+          <div class="thumb-fallback">VIDEO</div>
+          <span class="duration"></span>
+        </div>
+        <div class="item-main">
+          <div class="item-head">
+            <span class="pill kind"></span>
+            <span class="name"></span>
+          </div>
+          <div class="controls">
+            <button class="copy" type="button" title="复制链接">复制</button>
+            <span class="format"></span>
+            <span class="quality"></span>
+            <span class="source"></span>
+          </div>
+          <div class="details"></div>
+          <div class="progress" hidden>
+            <div class="progress-track">
+              <div class="progress-fill"></div>
+            </div>
+            <span class="progress-text"></span>
+            <span class="progress-speed"></span>
+            <button class="stop" type="button" hidden>停止</button>
+          </div>
+        </div>
+        <button class="download" type="button">下载</button>
+      </li>
+    </template>
+
+    <script src="src/popup.js"></script>
+  </body>
+</html>
