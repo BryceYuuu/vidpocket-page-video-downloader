@@ -10,7 +10,7 @@ Good contributions include:
 - making the popup UI clearer and more reliable
 - improving HLS handling for unencrypted streams
 - adding tests and fixtures for supported cases
-- improving installation docs and helper portability
+- improving installation docs and packaged media-processing portability
 
 Out of scope:
 
@@ -22,13 +22,8 @@ Out of scope:
 ## Development Setup
 
 1. Install Node.js 18 or newer.
-2. Install FFmpeg and FFprobe.
-3. Load the extension from `chrome://extensions`.
-4. Install the local helper:
-
-```sh
-./helper/install-helper.command
-```
+2. Run `npm ci`.
+3. Load the repository root from `chrome://extensions`.
 
 Run checks:
 

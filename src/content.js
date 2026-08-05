@@ -1,5 +1,7 @@
 const DIRECT_MEDIA_EXT_RE = /\.(mp4|m4v|mov|webm|mkv|avi|mp3|m4a|aac|ogg|oga|opus|wav|flac)(?:[?#]|$)/i;
 const PLAYLIST_EXT_RE = /\.(m3u8|mpd)(?:[?#]|$)/i;
+const X_HOOK_RESPONSE_SOURCE = "vidpocket-x-media-hook";
+const X_HOOK_REQUEST_SOURCE = "vidpocket-content";
 const URL_ATTRIBUTES = [
   "src",
   "href",
@@ -31,31 +33,38 @@ const MEDIA_SELECTOR = [
   "[data-webm]",
   "[data-hls]"
 ].join(",");
-
 let scanTimer = 0;
 let lastPayload = "";
+let lastXTweetIdPayload = "";
 let nextMediaId = 1;
 const mediaIds = new WeakMap();
+const pageApiCandidates = new Map();
+
+window.addEventListener("message", handleXMediaMessage);
 
 scanSoon();
+requestXMediaScan();
+requestXSyndicationScan(true).catch(() => {});
 
 document.addEventListener("loadedmetadata", scanSoon, true);
 document.addEventListener("loadeddata", scanSoon, true);
 document.addEventListener("play", scanSoon, true);
 
 const observer = new MutationObserver(scanSoon);
-observer.observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  attributeFilter: URL_ATTRIBUTES
-});
+observeDocument();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "scanNow") {
+    requestXMediaScan();
     const candidates = scan();
     sendCandidates(candidates, true);
-    sendResponse({ ok: true, count: candidates.length });
+    requestXSyndicationScan(true)
+      .then((xScan) => sendResponse({ ok: true, count: candidates.length, xScan }))
+      .catch((error) => sendResponse({
+        ok: true,
+        count: candidates.length,
+        xScan: { ok: false, error: error.message || String(error) }
+      }));
     return true;
   }
   return false;
@@ -65,11 +74,16 @@ function scanSoon() {
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
     sendCandidates(scan(), false);
+    requestXSyndicationScan(false).catch(() => {});
   }, 250);
 }
 
 function scan() {
   const candidates = new Map();
+
+  pageApiCandidates.forEach((candidate) => {
+    addCandidate(candidates, candidate.url, candidate);
+  });
 
   document.querySelectorAll("video, audio").forEach((element) => {
     collectMediaElement(candidates, element);
@@ -177,8 +191,191 @@ function addCandidate(map, url, details) {
     quality: details.quality || existing.quality || "",
     format: details.format || existing.format || formatFor(cleanUrl),
     thumbnail: details.thumbnail || existing.thumbnail || "",
-    mediaId: details.mediaId || existing.mediaId || ""
+    mediaId: details.mediaId || existing.mediaId || "",
+    contentType: details.contentType || existing.contentType || "",
+    bitrate: details.bitrate || existing.bitrate || 0
   });
+}
+
+function observeDocument() {
+  const target = document.documentElement;
+  if (!target) {
+    document.addEventListener("readystatechange", observeDocument, { once: true });
+    return;
+  }
+  observer.observe(target, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: URL_ATTRIBUTES
+  });
+}
+
+function requestXMediaScan() {
+  if (!isXPage()) {
+    return;
+  }
+  window.postMessage({
+    source: X_HOOK_REQUEST_SOURCE,
+    type: "scan-x-media"
+  }, "*");
+}
+
+async function requestXSyndicationScan(force) {
+  if (!isXPage() || (window.top && window.top !== window)) {
+    return { ok: true, skipped: true };
+  }
+  const tweetIds = collectVisibleXTweetIds();
+  if (!tweetIds.length) {
+    return { ok: true, skipped: true, requested: 0 };
+  }
+  const payload = tweetIds.join(",");
+  if (!force && payload === lastXTweetIdPayload) {
+    return { ok: true, skipped: true, requested: tweetIds.length };
+  }
+  lastXTweetIdPayload = payload;
+  return sendRuntimeMessage({
+    type: "scanXTweets",
+    tweetIds,
+    pageUrl: location.href,
+    pageTitle: document.title || ""
+  });
+}
+
+function collectVisibleXTweetIds() {
+  const ids = new Set();
+  addXTweetId(ids, location.href);
+
+  const mediaRoots = new Set();
+  document.querySelectorAll("video, [data-testid='videoPlayer'], [data-testid='videoComponent']").forEach((element) => {
+    const root = element.closest && (element.closest("article") || element.closest("[data-testid='tweet']"));
+    if (root) {
+      mediaRoots.add(root);
+    }
+  });
+
+  mediaRoots.forEach((root) => {
+    root.querySelectorAll("a[href*='/status/']").forEach((link) => {
+      addXTweetId(ids, link.href || link.getAttribute("href") || "");
+    });
+  });
+
+  return Array.from(ids).slice(0, 12);
+}
+
+function addXTweetId(ids, value) {
+  const id = xTweetIdFromUrl(value);
+  if (id) {
+    ids.add(id);
+  }
+}
+
+function xTweetIdFromUrl(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+  try {
+    const url = new URL(value, location.href);
+    if (!/(^|\.)(?:x\.com|twitter\.com)$/i.test(url.hostname)) {
+      return "";
+    }
+    const match = /\/status\/(\d{6,40})(?:\/|$)/.exec(url.pathname);
+    return match ? match[1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function handleXMediaMessage(event) {
+  if (event.source !== window || !isXPage() || !event.data || event.data.source !== X_HOOK_RESPONSE_SOURCE || event.data.type !== "candidates") {
+    return;
+  }
+  const candidates = Array.isArray(event.data.candidates) ? event.data.candidates.slice(0, 200) : [];
+  let changed = false;
+  candidates.forEach((rawCandidate) => {
+    const candidate = normalizeXBridgeCandidate(rawCandidate);
+    if (!candidate) {
+      return;
+    }
+    const key = normalizeUrl(candidate.url);
+    const previous = pageApiCandidates.get(key);
+    const merged = previous ? {
+      ...previous,
+      ...candidate,
+      label: candidate.label || previous.label || "",
+      thumbnail: candidate.thumbnail || previous.thumbnail || "",
+      duration: candidate.duration || previous.duration || 0,
+      width: candidate.width || previous.width || 0,
+      height: candidate.height || previous.height || 0,
+      quality: candidate.quality || previous.quality || ""
+    } : candidate;
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(merged)) {
+      pageApiCandidates.set(key, merged);
+      changed = true;
+    }
+  });
+  if (changed) {
+    sendCandidates(scan(), true);
+  }
+}
+
+function normalizeXBridgeCandidate(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const url = sanitizeUrl(String(value.url || ""));
+  if (!url || !isAllowedXMediaUrl(url)) {
+    return null;
+  }
+  const thumbnail = sanitizeUrl(String(value.thumbnail || ""));
+  const duration = Math.max(0, Math.min(24 * 60 * 60, Number(value.duration) || 0));
+  const width = safeDimension(value.width);
+  const height = safeDimension(value.height);
+  const kind = /\.m3u8(?:[?#]|$)/i.test(url) ? "hls" : "video";
+  return {
+    url,
+    kind,
+    source: "page-api",
+    label: String(value.label || "").replace(/\s+/g, " ").trim().slice(0, 140),
+    pageUrl: location.href,
+    frameUrl: location.href,
+    duration,
+    width,
+    height,
+    quality: String(value.quality || (height ? `${height}p` : "")).slice(0, 20),
+    format: kind === "hls" ? "HLS" : "MP4",
+    thumbnail: thumbnail && isAllowedXThumbnailUrl(thumbnail) ? thumbnail : "",
+    mediaId: String(value.mediaId || "").slice(0, 100),
+    contentType: kind === "hls" ? "application/x-mpegURL" : "video/mp4",
+    bitrate: Math.max(0, Number(value.bitrate) || 0)
+  };
+}
+
+function isXPage() {
+  return /(^|\.)(?:x\.com|twitter\.com)$/i.test(location.hostname);
+}
+
+function isAllowedXMediaUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "video.twimg.com" && /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(url.href);
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedXThumbnailUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "pbs.twimg.com";
+  } catch {
+    return false;
+  }
+}
+
+function safeDimension(value) {
+  const number = Number(value) || 0;
+  return number > 0 && number <= 16384 ? number : 0;
 }
 
 function sendCandidates(candidates, force) {
@@ -207,7 +404,7 @@ function sendCandidates(candidates, force) {
   lastPayload = payload;
 
   try {
-    const result = chrome.runtime.sendMessage({
+    const result = sendRuntimeMessage({
       type: "contentCandidates",
       pageUrl: location.href,
       pageTitle: document.title || "",
@@ -217,12 +414,27 @@ function sendCandidates(candidates, force) {
       pageVideoHeight: pagePreview.height,
       candidates
     });
-    if (result && typeof result.catch === "function") {
-      result.catch(() => {});
-    }
+    result.catch(() => {});
   } catch {
     // The extension context can disappear during reloads or extension updates.
   }
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve(response);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 function toAbsoluteUrl(value) {

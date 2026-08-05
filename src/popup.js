@@ -1,5 +1,5 @@
-const HELPER_ORIGIN = "http://127.0.0.1:17384";
 const DIRECT_KINDS = new Set(["video", "audio", "media"]);
+const ACTIVE_JOB_STATES = new Set(["queued", "preparing", "downloading", "processing", "saving"]);
 const statusEl = document.getElementById("status");
 const itemsEl = document.getElementById("items");
 const emptyEl = document.getElementById("empty");
@@ -9,85 +9,152 @@ const template = document.getElementById("item-template");
 
 let activeTab = null;
 let currentItems = [];
+let currentJobs = [];
+let currentXScan = null;
+let jobPollTimer = 0;
+let thumbnailInFlight = 0;
+const thumbnailQueue = [];
+const requestedThumbnails = new Set();
 const thumbnailCache = new Map();
-const activeDownloadIds = new Set();
-let helperHealthPromise = null;
-let helperHealthOk = false;
 
 document.addEventListener("DOMContentLoaded", init);
 refreshButton.addEventListener("click", refresh);
 clearButton.addEventListener("click", clearCurrentTab);
+window.addEventListener("unload", () => clearTimeout(jobPollTimer));
 
 async function init() {
-  const tabs = await queryTabs({ active: true, currentWindow: true });
-  activeTab = tabs[0] || null;
-
+  activeTab = await resolveTargetTab();
   if (!activeTab || typeof activeTab.id !== "number") {
-    setStatus("没有当前标签页");
+    setStatus("没有可检测的网页标签页");
     render([]);
     return;
   }
-
   await refresh();
+  scheduleJobPoll(200);
+}
+
+async function resolveTargetTab() {
+  const targetTabId = targetTabIdFromUrl();
+  if (Number.isInteger(targetTabId) && targetTabId >= 0) {
+    const tab = await getTab(targetTabId).catch(() => null);
+    if (tab) return tab;
+  }
+  const tabs = await queryTabs({ active: true, currentWindow: true });
+  return tabs[0] || null;
+}
+
+function targetTabIdFromUrl() {
+  try {
+    const value = new URL(location.href).searchParams.get("tabId");
+    return value === null ? NaN : Number(value);
+  } catch {
+    return NaN;
+  }
 }
 
 async function refresh() {
-  if (!activeTab) {
-    return;
-  }
-
+  if (!activeTab) return;
   setStatus("正在扫描当前页面");
-  await sendTabMessage(activeTab.id, { type: "scanNow" }).catch(() => null);
-  await delay(300);
-  await loadAndRenderItems(0);
+  const directXScan = requestActiveXStatusScan(activeTab).catch(() => null);
+  await ensureContentScanner(activeTab);
+  await directXScan;
+  await delay(350);
+  await loadState(0);
 }
 
-async function loadAndRenderItems(pollCount) {
-  if (activeDownloadIds.size) {
-    return;
+async function requestActiveXStatusScan(tab) {
+  if (!isXTab(tab) || typeof tab.id !== "number") {
+    return null;
   }
-  const response = await sendRuntimeMessage({ type: "getCandidates", tabId: activeTab.id });
-  const rawItems = response && response.ok && Array.isArray(response.items) ? response.items : [];
-  const items = prepareDisplayItems(rawItems);
-  currentItems = items;
-  render(items);
-  hydrateHlsThumbnails(items).catch(() => {});
+  const tweetId = xTweetIdFromUrl(tab.url || "");
+  if (!tweetId) {
+    return null;
+  }
+  return sendRuntimeMessage({
+    type: "scanXTweets",
+    tabId: tab.id,
+    tweetIds: [tweetId],
+    pageUrl: tab.url || "",
+    pageTitle: tab.title || ""
+  });
+}
 
-  const checkingCount = items.filter((item) => item.probeStatus === "checking").length;
-  const hlsWithoutDurationCount = items.filter((item) => item.kind === "hls" && !item.duration).length;
-  if (checkingCount || hlsWithoutDurationCount) {
-    setStatus(checkingCount ? `发现 ${items.length} 个媒体资源，正在验证 ${checkingCount} 个` : `发现 ${items.length} 个媒体资源，正在读取时长`);
-    if (pollCount < 8) {
-      setTimeout(() => {
-        loadAndRenderItems(pollCount + 1).catch(() => {});
-      }, 500);
-    }
-    return;
+async function ensureContentScanner(tab) {
+  if (!tab || typeof tab.id !== "number" || !/^https?:\/\//i.test(tab.url || "")) return;
+  if (isXTab(tab)) {
+    await executeXPageHook(tab.id).catch(() => null);
   }
+  const ping = await sendTabMessage(tab.id, { type: "scanNow" }).catch(() => null);
+  if (ping && ping.ok) return;
+  await executeContentScript(tab.id).catch(() => null);
+  if (isXTab(tab)) {
+    await executeXPageHook(tab.id).catch(() => null);
+  }
+  await sendTabMessage(tab.id, { type: "scanNow" }).catch(() => null);
+}
 
-  const hlsCount = items.filter((item) => item.kind === "hls").length;
-  if (items.length && hlsCount && !helperHealthOk) {
-    setStatus(`发现 ${items.length} 个媒体资源；HLS 下载需要先启动本地助手`);
+async function loadState(pollCount = 0) {
+  if (!activeTab) return;
+  const [candidateResponse, jobResponse] = await Promise.all([
+    sendRuntimeMessage({ type: "getCandidates", tabId: activeTab.id }).catch(() => ({ ok: false })),
+    sendRuntimeMessage({ type: "getDownloadJobs", tabId: activeTab.id }).catch(() => ({ ok: false }))
+  ]);
+  const rawItems = candidateResponse && candidateResponse.ok && Array.isArray(candidateResponse.items)
+    ? candidateResponse.items
+    : [];
+  currentXScan = candidateResponse && candidateResponse.ok ? candidateResponse.xScan || null : currentXScan;
+  currentJobs = jobResponse && jobResponse.ok && Array.isArray(jobResponse.jobs) ? jobResponse.jobs : currentJobs;
+  currentItems = prepareDisplayItems(rawItems);
+  render(currentItems);
+  updateHeaderStatus(rawItems);
+
+  if (!currentItems.length && pollCount < 12 && (!currentXScan || currentXScan.status === "loading")) {
+    setStatus(isXTab(activeTab) ? "正在解析 X 页面视频" : "正在等待页面媒体资源");
+    setTimeout(() => loadState(pollCount + 1).catch(() => {}), 450);
     return;
   }
-  setStatus(items.length ? `发现 ${items.length} 个媒体资源` : "未发现可下载的视频");
+  const checking = currentItems.filter((item) => item.probeStatus === "checking").length;
+  if (checking && pollCount < 8) {
+    setTimeout(() => loadState(pollCount + 1).catch(() => {}), 500);
+  }
+}
+
+function updateHeaderStatus(rawItems) {
+  const activeJobs = currentJobs.filter((job) => ACTIVE_JOB_STATES.has(job.status));
+  if (activeJobs.length) {
+    setStatus(`${activeJobs.length} 个下载任务正在进行`);
+    return;
+  }
+  if (currentItems.length) {
+    const previewCount = currentItems.filter((item) => item.thumbnail || canPreviewVideo(item)).length;
+    setStatus(`发现 ${currentItems.length} 个媒体资源；${previewCount} 个有预览`);
+    return;
+  }
+  if (isXTab(activeTab) && currentXScan && currentXScan.status === "error") {
+    setStatus(`X 视频解析失败：${currentXScan.error || "无法读取公开媒体信息"}`);
+    return;
+  }
+  if (isXTab(activeTab) && currentXScan && currentXScan.status === "done" && currentXScan.requested > 0) {
+    setStatus(`已检查 ${currentXScan.requested} 个 X 帖子，未返回公开可下载视频`);
+    return;
+  }
+  const unsupported = rawItems.some((item) => item && ["dash", "blob"].includes(item.kind));
+  setStatus(unsupported ? "页面只暴露了暂不可保存的媒体流" : "未发现可下载的视频");
 }
 
 async function clearCurrentTab() {
-  if (!activeTab) {
-    return;
-  }
+  if (!activeTab) return;
   await sendRuntimeMessage({ type: "clearTab", tabId: activeTab.id });
   currentItems = [];
   render([]);
-  setStatus("已清空");
+  setStatus("已清空识别记录");
 }
 
 function render(items) {
   itemsEl.textContent = "";
   emptyEl.hidden = items.length > 0;
 
-  items.forEach((item) => {
+  items.forEach((item, index) => {
     const node = template.content.firstElementChild.cloneNode(true);
     const removeButton = node.querySelector(".remove");
     const thumbEl = node.querySelector(".thumb");
@@ -108,415 +175,324 @@ function render(items) {
     const stopButton = node.querySelector(".stop");
     const copyButton = node.querySelector(".copy");
     const downloadButton = node.querySelector(".download");
+    const job = jobForItem(item);
 
-    const previewable = canPreviewVideo(item);
-    if (previewable) {
-      thumbVideo.src = item.url;
-      thumbVideo.title = item.url;
-      if (item.thumbnail) {
-        thumbVideo.poster = item.thumbnail;
-      }
-      thumbEl.classList.add("has-preview");
-      thumbVideo.addEventListener("loadedmetadata", () => {
-        if (!durationEl.textContent) {
-          durationEl.textContent = formatDuration(thumbVideo.duration);
-        }
-      });
-      thumbEl.addEventListener("mouseenter", () => {
-        thumbVideo.play().catch(() => {});
-      });
-      thumbEl.addEventListener("mouseleave", () => {
-        thumbVideo.pause();
-        thumbVideo.currentTime = 0;
-      });
-    } else {
-      thumbVideo.removeAttribute("src");
-    }
-
-    const staticThumbnail = !previewable ? (item.thumbnail || infoPlaceholder(item)) : "";
-    if (staticThumbnail) {
-      thumbImg.src = staticThumbnail;
-      thumbEl.classList.add("has-preview");
-    } else {
-      thumbImg.removeAttribute("src");
-    }
-    if (item.previewStatus === "pending") {
-      fallbackEl.textContent = "预览中";
-    } else if (item.previewStatus === "failed") {
-      fallbackEl.textContent = "无预览";
-    } else {
-      fallbackEl.textContent = "VIDEO";
-    }
-    thumbImg.addEventListener("error", () => {
-      thumbImg.removeAttribute("src");
+    renderPreview(item, {
+      thumbEl,
+      thumbVideo,
+      thumbImg,
+      fallbackEl,
+      durationEl
     });
-
     durationEl.textContent = formatDuration(item.duration);
     kindEl.textContent = badgeLabel(item);
     kindEl.classList.add(item.kind || "media");
-
     nameEl.textContent = displayName(item);
     nameEl.title = item.url;
-
     formatEl.textContent = item.kind === "hls" ? "MP4" : (item.format || formatFromUrl(item.url));
     qualityEl.textContent = item.quality || "";
     qualityEl.hidden = !item.quality;
-    if (isHighQuality(item.quality)) {
-      qualityEl.classList.add("high");
-    }
-
+    qualityEl.classList.toggle("high", isHighQuality(item.quality));
     sourceEl.textContent = sourceLabel(item.source);
-    detailsEl.textContent = detailLine(item);
+    detailsEl.textContent = detailLine(item, job);
     detailsEl.title = item.url;
 
     removeButton.addEventListener("click", async () => {
       await sendRuntimeMessage({ type: "removeCandidate", tabId: activeTab.id, id: item.id });
       currentItems = currentItems.filter((candidate) => candidate.id !== item.id);
       render(currentItems);
-      setStatus(currentItems.length ? `发现 ${currentItems.length} 个媒体资源` : "列表为空");
+      updateHeaderStatus(currentItems);
     });
-
     copyButton.addEventListener("click", async () => {
       await navigator.clipboard.writeText(item.url);
-      setStatus("已复制链接");
+      setStatus("已复制媒体链接");
     });
 
-    downloadButton.textContent = "下载";
-    if (item.kind === "hls") {
-      downloadButton.title = "使用本地助手把 HLS 保存为 MP4。";
-      downloadButton.addEventListener("click", () => {
-        downloadHlsWithHelper(item, {
-          button: downloadButton,
-          progressEl,
-          progressFillEl,
-          progressTextEl
-          ,
-          progressSpeedEl,
-          stopButton
-        }).catch((error) => {
-          setStatus(error.message || "下载失败");
-          downloadButton.disabled = false;
-          downloadButton.textContent = "下载";
-          hideProgress(progressEl);
-        });
-      });
-    } else if (item.probeStatus === "checking") {
-      downloadButton.disabled = true;
-      downloadButton.textContent = "检测中";
-      downloadButton.title = "正在验证这是不是完整视频文件。";
-    } else if (!item.downloadable) {
-      downloadButton.disabled = true;
-      downloadButton.title = blockedReason(item);
-    } else {
-      downloadButton.addEventListener("click", async () => {
-        downloadButton.disabled = true;
-        downloadButton.textContent = "开始中";
-        const result = await sendRuntimeMessage({
-          type: "download",
-          tabId: activeTab.id,
-          id: item.id,
-          url: item.url,
-          kind: item.kind,
-          label: item.label,
-          filename: directDownloadFilename(item)
-        });
-        if (!result || !result.ok) {
-          setStatus((result && result.error) || "下载失败");
-          downloadButton.disabled = false;
-          downloadButton.textContent = "下载";
-          return;
-        }
-        downloadButton.textContent = "已开始";
-        setStatus("下载已开始");
-      });
-    }
+    configureDownloadControls(item, job, {
+      downloadButton,
+      stopButton,
+      progressEl,
+      progressFillEl,
+      progressTextEl,
+      progressSpeedEl
+    });
 
     itemsEl.appendChild(node);
+    if (item.kind === "hls" && !item.thumbnail && item.previewStatus !== "failed" && index < 12) {
+      queueThumbnail(item);
+    }
   });
 }
 
+function renderPreview(item, controls) {
+  const { thumbEl, thumbVideo, thumbImg, fallbackEl, durationEl } = controls;
+  const staticThumbnail = item.thumbnail || (!canPreviewVideo(item) ? infoPlaceholder(item) : "");
+  if (staticThumbnail) {
+    thumbImg.src = staticThumbnail;
+    thumbEl.classList.add("has-preview");
+  } else {
+    thumbImg.removeAttribute("src");
+  }
+
+  if (canPreviewVideo(item) && !item.thumbnail) {
+    thumbVideo.src = item.url;
+    thumbVideo.title = item.url;
+    thumbEl.classList.add("has-preview");
+    thumbVideo.addEventListener("loadedmetadata", () => {
+      if (!durationEl.textContent) durationEl.textContent = formatDuration(thumbVideo.duration);
+    });
+    thumbEl.addEventListener("mouseenter", () => thumbVideo.play().catch(() => {}));
+    thumbEl.addEventListener("mouseleave", () => {
+      thumbVideo.pause();
+      try { thumbVideo.currentTime = 0; } catch {}
+    });
+  } else {
+    thumbVideo.removeAttribute("src");
+  }
+  fallbackEl.textContent = item.previewStatus === "pending" ? "预览中" : "VIDEO";
+  thumbImg.addEventListener("error", () => thumbImg.removeAttribute("src"));
+}
+
+function configureDownloadControls(item, job, controls) {
+  const { downloadButton, stopButton, progressEl, progressFillEl, progressTextEl, progressSpeedEl } = controls;
+  downloadButton.textContent = "下载";
+
+  if (job && ACTIVE_JOB_STATES.has(job.status)) {
+    downloadButton.disabled = true;
+    downloadButton.textContent = jobButtonLabel(job);
+    showProgress(
+      progressEl,
+      progressFillEl,
+      progressTextEl,
+      progressSpeedEl,
+      stopButton,
+      job.progress,
+      jobProgressLabel(job),
+      formatSpeed(job.speed)
+    );
+    stopButton.hidden = false;
+    stopButton.addEventListener("click", async () => {
+      stopButton.disabled = true;
+      await sendRuntimeMessage({ type: "cancelDownloadJob", jobId: job.id });
+      await loadJobsAndRender();
+    });
+    return;
+  }
+
+  if (item.probeStatus === "checking") {
+    downloadButton.disabled = true;
+    downloadButton.textContent = "检测中";
+    downloadButton.title = "正在验证完整视频文件。";
+    return;
+  }
+  if (item.kind !== "hls" && !item.downloadable) {
+    downloadButton.disabled = true;
+    downloadButton.title = "这个资源无法直接下载。";
+    return;
+  }
+  if (job && job.status === "complete") {
+    downloadButton.title = "已保存，点击可再次下载。";
+  } else if (job && job.status === "error") {
+    downloadButton.title = job.error || "上次下载失败，点击重试。";
+  }
+  downloadButton.addEventListener("click", () => startItemDownload(item, downloadButton));
+}
+
+async function startItemDownload(item, button) {
+  button.disabled = true;
+  button.textContent = "准备中";
+  setStatus(`正在启动：${displayName(item)}`);
+  const response = item.kind === "hls"
+    ? await sendRuntimeMessage({
+      type: "startHlsDownload",
+      tabId: activeTab.id,
+      id: item.id,
+      url: item.url,
+      filename: `${safeFilename(downloadBaseName(item))}.mp4`
+    })
+    : await sendRuntimeMessage({
+      type: "download",
+      tabId: activeTab.id,
+      id: item.id,
+      url: item.url,
+      kind: item.kind,
+      filename: directDownloadFilename(item)
+    });
+  if (!response || !response.ok) {
+    button.disabled = false;
+    button.textContent = "下载";
+    setStatus((response && response.error) || "无法启动下载");
+    return;
+  }
+  if (response.job) {
+    currentJobs = [response.job, ...currentJobs.filter((job) => job.id !== response.job.id)];
+  }
+  render(currentItems);
+  scheduleJobPoll(150);
+}
+
+function jobForItem(item) {
+  return currentJobs
+    .filter((job) => job.sourceId === item.id)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
+}
+
+function jobButtonLabel(job) {
+  if (job.status === "processing") return "合并中";
+  if (job.status === "saving") return "保存中";
+  if (job.status === "preparing" || job.status === "queued") return "准备中";
+  return "下载中";
+}
+
+function jobProgressLabel(job) {
+  if (Number(job.progress) > 0) return `${Math.max(1, Math.min(99, Math.round(job.progress * 100)))}%`;
+  if (job.bytesReceived) return formatBytes(job.bytesReceived);
+  return job.message || "准备";
+}
+
+function scheduleJobPoll(delayMs) {
+  clearTimeout(jobPollTimer);
+  jobPollTimer = setTimeout(async () => {
+    await loadJobsAndRender().catch(() => {});
+    const hasActive = currentJobs.some((job) => ACTIVE_JOB_STATES.has(job.status));
+    scheduleJobPoll(hasActive ? 600 : 1800);
+  }, delayMs);
+}
+
+async function loadJobsAndRender() {
+  if (!activeTab) return;
+  const response = await sendRuntimeMessage({ type: "getDownloadJobs", tabId: activeTab.id });
+  if (response && response.ok && Array.isArray(response.jobs)) {
+    currentJobs = response.jobs;
+    render(currentItems);
+    updateHeaderStatus(currentItems);
+  }
+}
+
+function queueThumbnail(item) {
+  if (requestedThumbnails.has(item.id)) return;
+  requestedThumbnails.add(item.id);
+  thumbnailQueue.push(item);
+  pumpThumbnailQueue();
+}
+
+function pumpThumbnailQueue() {
+  while (thumbnailInFlight < 2 && thumbnailQueue.length) {
+    const item = thumbnailQueue.shift();
+    thumbnailInFlight += 1;
+    sendRuntimeMessage({ type: "requestHlsThumbnail", tabId: activeTab.id, id: item.id })
+      .then((result) => {
+        if (result && result.pending) requestedThumbnails.delete(item.id);
+      })
+      .catch(() => {})
+      .finally(async () => {
+        thumbnailInFlight -= 1;
+        await reloadCandidatesOnly().catch(() => {});
+        pumpThumbnailQueue();
+      });
+  }
+}
+
+async function reloadCandidatesOnly() {
+  const response = await sendRuntimeMessage({ type: "getCandidates", tabId: activeTab.id });
+  if (response && response.ok && Array.isArray(response.items)) {
+    currentItems = prepareDisplayItems(response.items);
+    render(currentItems);
+    updateHeaderStatus(response.items);
+  }
+}
+
 function prepareDisplayItems(items) {
-  return annotateDisplayItems(sortItems(dedupeItems(items)
-    .map(applyCachedThumbnail)
-    .filter(isDisplayableDownload)));
+  return annotateDisplayItems(sortItems(dedupeItems(items).map(applyCachedThumbnail).filter(isDisplayableDownload)));
 }
 
 function dedupeItems(items) {
   const byUrl = new Map();
   items.forEach((item) => {
-    if (!item || !item.url) {
+    if (!item || !item.url) return;
+    const key = canonicalDisplayKey(item);
+    const existing = byUrl.get(key);
+    if (!existing) {
+      byUrl.set(key, item);
       return;
     }
-    const key = normalizeDisplayUrl(item.url);
-    const existing = byUrl.get(key);
-    if (!existing || itemScore(item) > itemScore(existing)) {
-      byUrl.set(key, item);
-    }
+    const preferred = itemScore(item) > itemScore(existing) ? item : existing;
+    const fallback = preferred === item ? existing : item;
+    byUrl.set(key, {
+      ...fallback,
+      ...preferred,
+      label: usefulDisplayLabel(preferred.label, fallback.label),
+      thumbnail: preferred.thumbnail || fallback.thumbnail || "",
+      duration: preferred.duration || fallback.duration || 0,
+      width: preferred.width || fallback.width || 0,
+      height: preferred.height || fallback.height || 0,
+      quality: preferred.quality || fallback.quality || ""
+    });
   });
   return Array.from(byUrl.values());
 }
 
 function itemScore(item) {
   return Number(Boolean(item.thumbnail)) * 20 +
-    Number(Boolean(item.downloadable)) * 10 +
+    Number(Boolean(usefulDisplayLabel(item.label))) * 12 +
+    Number(Boolean(item.downloadable || item.kind === "hls")) * 10 +
+    qualityHeight(item.quality) / 1000 +
     Number(item.contentLength || 0) / 1000000 +
     Number(item.lastSeen || 0) / 10000000000000;
 }
 
-function isDisplayableDownload(item) {
-  if (item.kind === "hls") {
-    return true;
+function usefulDisplayLabel(...values) {
+  for (const value of values) {
+    const label = String(value || "").replace(/\s+/g, " ").trim();
+    if (label && !isNoisyLabel(label)) return label;
   }
-  return DIRECT_KINDS.has(item.kind) && (item.downloadable || item.probeStatus === "checking");
+  return String(values.find(Boolean) || "").trim();
+}
+
+function canonicalDisplayKey(item) {
+  try {
+    const url = new URL(item.url);
+    if (url.hostname.toLowerCase() === "video.twimg.com") {
+      const path = decodeURIComponentSafe(url.pathname);
+      const numberedAsset = /\/(amplify_video|ext_tw_video)\/(\d+)/i.exec(path);
+      const tweetAsset = /\/tweet_video\/([^/.]+)/i.exec(path);
+      const asset = numberedAsset
+        ? `${numberedAsset[1].toLowerCase()}:${numberedAsset[2]}`
+        : (tweetAsset ? `tweet_video:${tweetAsset[1]}` : "");
+      if (asset) {
+        if (item.kind === "hls" || /\.m3u8$/i.test(path)) return `x:${asset}:hls`;
+        const dimensions = /(\d{2,4})x(\d{2,4})/i.exec(path);
+        const rendition = dimensions
+          ? `${dimensions[1]}x${dimensions[2]}`
+          : (item.quality || ((item.width || item.height) ? `${item.width || 0}x${item.height || 0}` : normalizeDisplayUrl(item.url)));
+        return `x:${asset}:video:${rendition}`;
+      }
+    }
+  } catch {}
+  return normalizeDisplayUrl(item.url);
+}
+
+function isDisplayableDownload(item) {
+  return Boolean(item) && (
+    item.kind === "hls" ||
+    (DIRECT_KINDS.has(item.kind) && (item.downloadable || item.probeStatus === "checking"))
+  );
 }
 
 function applyCachedThumbnail(item) {
-  if (item.kind !== "hls" || item.thumbnail) {
-    return item;
-  }
   const cached = thumbnailCache.get(item.url);
-  if (!cached) {
-    return item;
-  }
-  if (cached.status === "pending") {
-    return { ...item, previewStatus: "pending" };
-  }
-  if (cached.status === "failed") {
-    return {
-      ...item,
-      previewStatus: "failed",
-      previewError: cached.error || "预览生成失败"
-    };
-  }
-  if (cached.status !== "done") {
-    return item;
-  }
-  return {
-    ...item,
-    thumbnail: cached.thumbnail || "",
-    previewStatus: "done",
-    duration: item.duration || cached.duration || 0,
-    width: item.width || cached.width || 0,
-    height: item.height || cached.height || 0,
-    quality: item.quality || qualityFromSize(cached.width || 0, cached.height || 0)
-  };
-}
-
-async function hydrateHlsThumbnails(items) {
-  const targets = items
-    .filter((item) => item.kind === "hls" && !item.thumbnail && !thumbnailCache.has(item.url))
-    .slice(0, 24);
-  if (!targets.length) {
-    return;
-  }
-  const helperOk = await checkHelper(false);
-  if (!helperOk) {
-    return;
-  }
-
-  await mapLimit(targets, 3, async (item) => {
-    if (thumbnailCache.has(item.url)) {
-      return;
-    }
-    thumbnailCache.set(item.url, { status: "pending" });
-    currentItems = prepareDisplayItems(currentItems);
-    renderIfIdle(currentItems);
-    try {
-      const result = await helperPost("/thumbnail", {
-        url: item.url,
-        pageUrl: item.pageUrl || (activeTab && activeTab.url) || "",
-        second: 1
-      });
-      if (!result || !result.ok || !result.thumbnail) {
-        throw new Error((result && result.error) || "缩略图生成失败");
-      }
-      thumbnailCache.set(item.url, {
-        status: "done",
-        thumbnail: result.thumbnail,
-        duration: Number(result.duration) || 0,
-        width: Number(result.width) || 0,
-        height: Number(result.height) || 0
-      });
-      currentItems = prepareDisplayItems(currentItems);
-      renderIfIdle(currentItems);
-    } catch (error) {
-      thumbnailCache.set(item.url, {
-        status: "failed",
-        error: shortError(error)
-      });
-      currentItems = prepareDisplayItems(currentItems);
-      renderIfIdle(currentItems);
-      setStatus("部分视频无法生成预览，原因已显示在条目里");
-    }
-  });
-}
-
-async function downloadHlsWithHelper(item, controls) {
-  const activeKey = item.id || item.url;
-  activeDownloadIds.add(activeKey);
-  try {
-    return await downloadHlsWithHelperInner(item, controls);
-  } finally {
-    activeDownloadIds.delete(activeKey);
-  }
-}
-
-async function downloadHlsWithHelperInner(item, controls) {
-  const { button, progressEl, progressFillEl, progressTextEl, progressSpeedEl, stopButton } = controls;
-  let jobId = "";
-  let stopped = false;
-  button.disabled = true;
-  button.textContent = "准备中";
-  showProgress(progressEl, progressFillEl, progressTextEl, progressSpeedEl, stopButton, 0, "准备", "");
-  if (stopButton) {
-    stopButton.hidden = false;
-    stopButton.disabled = false;
-    stopButton.onclick = async () => {
-      stopped = true;
-      stopButton.disabled = true;
-      button.textContent = "停止中";
-      if (jobId) {
-        await helperPost(`/jobs/${encodeURIComponent(jobId)}/cancel`, {}).catch(() => null);
-      }
-    };
-  }
-  const helperOk = await checkHelper(true);
-  if (!helperOk) {
-    throw new Error("本地助手没有启动：双击 helper/start-helper.command 后再点下载。");
-  }
-
-  button.textContent = "下载中";
-  showProgress(progressEl, progressFillEl, progressTextEl, progressSpeedEl, stopButton, 0.01, "1%", "");
-  const result = await helperPost("/download", {
-    url: item.url,
-    filename: `${safeFilename(downloadBaseName(item))}.mp4`,
-    pageUrl: item.pageUrl || (activeTab && activeTab.url) || "",
-    duration: Number(item.duration) || 0,
-    width: Number(item.width) || 0,
-    height: Number(item.height) || 0,
-    quality: item.quality || "",
-    relatedHlsUrls: relatedHlsUrls(item)
-  });
-  if (!result || !result.ok || !result.jobId) {
-    throw new Error((result && result.error) || "本地助手没有开始下载。");
-  }
-  jobId = result.jobId;
-
-  setStatus("本地助手正在生成 MP4");
-  const finalJob = await pollHelperJob(result.jobId, controls);
-  if (stopped || finalJob.status === "canceled") {
-    button.textContent = "下载";
-    throw new Error("已停止下载");
-  }
-  if (finalJob.status !== "done") {
-    throw new Error(finalJob.error || "下载失败");
-  }
-  showProgress(progressEl, progressFillEl, progressTextEl, progressSpeedEl, stopButton, 1, "100%", "");
-  button.textContent = "加入下载";
-  const filename = finalJob.filename || `${safeFilename(downloadBaseName(item))}.mp4`;
-  await chromeDownload(`${HELPER_ORIGIN}/files/${encodeURIComponent(result.jobId)}`, filename);
-  button.textContent = "已开始";
-  if (stopButton) {
-    stopButton.hidden = true;
-  }
-  setStatus(finalJob.warning ? `已加入 Chrome 下载：${filename}；${finalJob.warning}` : `已加入 Chrome 下载：${filename}`);
-}
-
-function renderIfIdle(items) {
-  if (activeDownloadIds.size) {
-    return;
-  }
-  render(items);
-}
-
-function relatedHlsUrls(item) {
-  const urls = [item && item.url];
-  currentItems.forEach((candidate) => {
-    if (candidate && candidate.kind === "hls" && candidate.url) {
-      urls.push(candidate.url);
-    }
-  });
-  return [...new Set(urls.filter(Boolean))].slice(0, 40);
-}
-
-async function pollHelperJob(jobId, controls) {
-  const { button, progressEl, progressFillEl, progressTextEl, progressSpeedEl } = controls;
-  for (let index = 0; index < 7200; index += 1) {
-    await delay(500);
-    const job = await helperGet(`/jobs/${encodeURIComponent(jobId)}`);
-    if (!job || !job.ok) {
-      throw new Error((job && job.error) || "无法读取下载状态");
-    }
-    if (job.status === "done" || job.status === "error") {
-      updateProgress(progressEl, progressFillEl, progressTextEl, progressSpeedEl, job.progress, job.status === "done" ? "100%" : (job.status === "canceled" ? "停止" : "失败"), formatSpeed(job.speed));
-      return job;
-    }
-    if (job.status === "running") {
-      button.textContent = "下载中";
-      updateProgress(progressEl, progressFillEl, progressTextEl, progressSpeedEl, job.progress, progressLabel(job), formatSpeed(job.speed));
-    }
-  }
-  throw new Error("下载超时");
-}
-
-async function checkHelper(showError) {
-  if (helperHealthPromise) {
-    return helperHealthPromise;
-  }
-  helperHealthPromise = helperGet("/health")
-    .then((result) => {
-      helperHealthOk = Boolean(result && result.ok);
-      return helperHealthOk;
-    })
-    .catch(() => {
-      helperHealthOk = false;
-      if (showError) {
-        setStatus("本地助手没有启动");
-      }
-      return false;
-    })
-    .finally(() => {
-      setTimeout(() => {
-        helperHealthPromise = null;
-      }, 5000);
-    });
-  return helperHealthPromise;
-}
-
-async function helperGet(path) {
-  const response = await fetch(`${HELPER_ORIGIN}${path}`, {
-    method: "GET",
-    cache: "no-store"
-  });
-  return response.json();
-}
-
-async function helperPost(path, body) {
-  const response = await fetch(`${HELPER_ORIGIN}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store"
-  });
-  return response.json();
+  return cached && !item.thumbnail ? { ...item, thumbnail: cached } : item;
 }
 
 function sortItems(items) {
   const priority = { video: 0, hls: 1, audio: 2, media: 3 };
   return [...items].sort((a, b) => {
     const previewDelta = Number(Boolean(b.thumbnail)) - Number(Boolean(a.thumbnail));
-    if (previewDelta) {
-      return previewDelta;
-    }
-    const qualityDelta = (qualityHeight(b.quality) || 0) - (qualityHeight(a.quality) || 0);
-    if (qualityDelta) {
-      return qualityDelta;
-    }
+    if (previewDelta) return previewDelta;
+    const qualityDelta = qualityHeight(b.quality) - qualityHeight(a.quality);
+    if (qualityDelta) return qualityDelta;
     const kindDelta = (priority[a.kind] ?? 9) - (priority[b.kind] ?? 9);
-    if (kindDelta) {
-      return kindDelta;
-    }
-    return (b.lastSeen || 0) - (a.lastSeen || 0);
+    return kindDelta || (b.lastSeen || 0) - (a.lastSeen || 0);
   });
 }
 
@@ -536,149 +512,85 @@ function annotateDisplayItems(items) {
 }
 
 function badgeLabel(item) {
-  if (item.kind === "hls") {
-    return "HLS";
-  }
-  if (item.kind === "audio") {
-    return "AUDIO";
-  }
+  if (item.kind === "hls") return "HLS";
+  if (item.kind === "audio") return "AUDIO";
   return item.format || "VIDEO";
 }
 
 function sourceLabel(source) {
-  if (!source) {
-    return "页面";
-  }
-  if (source.includes("network")) {
-    return "网络";
-  }
-  if (source.includes("performance")) {
-    return "加载记录";
-  }
+  if (!source) return "页面";
+  if (source.includes("network")) return "网络";
+  if (source.includes("performance")) return "加载记录";
+  if (source.includes("page-api")) return "页面接口";
   return "页面";
 }
 
-function detailLine(item) {
+function detailLine(item, job) {
   const parts = [];
-  if (item.sourceName) {
-    parts.push(item.sourceName);
-  }
+  if (item.sourceName) parts.push(item.sourceName);
   const host = hostFromUrl(item.url);
-  if (host && host !== item.sourceName) {
-    parts.push(host);
-  }
-  if (item.width && item.height) {
-    parts.push(`${item.width}x${item.height}`);
-  }
-  if (item.contentType) {
-    parts.push(item.contentType.split(";")[0]);
-  }
-  if (item.contentLength) {
-    parts.push(formatBytes(item.contentLength));
-  }
-  if (item.kind === "hls") {
-    parts.push("本地助手生成 MP4");
-  }
-  if (item.previewStatus === "pending") {
-    parts.push("正在生成预览");
-  }
-  if (item.previewStatus === "failed") {
-    parts.push(`预览失败：${item.previewError || "无法从该源抽帧"}`);
-  }
-  if (item.probeStatus === "checking") {
-    parts.push("正在验证完整文件");
-  }
+  if (host && host !== item.sourceName) parts.push(host);
+  if (item.width && item.height) parts.push(`${item.width}x${item.height}`);
+  if (item.contentLength) parts.push(formatBytes(item.contentLength));
+  if (item.kind === "hls") parts.push("扩展内合并 MP4");
+  if (item.previewStatus === "pending") parts.push("正在抽取预览帧");
+  if (item.previewStatus === "failed") parts.push("未能抽取真实预览帧");
+  if (job && job.status === "complete") parts.push("已保存");
+  if (job && job.status === "error") parts.push(`失败：${job.error || "未知错误"}`);
   return parts.join(" | ");
 }
 
-function blockedReason(item) {
-  if (item.kind === "hls") {
-    return "需要启动本地助手后才能保存 HLS。";
-  }
-  return "这个资源无法直接下载。";
-}
-
 function displayName(item) {
-  if (item.displayTitle) {
-    return item.displayTitle;
-  }
+  if (item.displayTitle) return item.displayTitle;
   const label = item.label || labelFromUrl(item.url);
-  if (!label || label === "media") {
-    return labelFromUrl(item.url);
-  }
-  return label;
+  return !label || label === "media" ? labelFromUrl(item.url) : label;
 }
 
 function downloadBaseName(item) {
-  if (item.downloadTitle) {
-    return item.downloadTitle;
-  }
+  if (item.downloadTitle) return item.downloadTitle;
   const parts = [displayName(item)];
-  if (item.quality) {
-    parts.push(item.quality);
-  }
+  if (item.quality) parts.push(item.quality);
   const duration = compactDuration(item.duration);
-  if (duration) {
-    parts.push(duration);
-  }
+  if (duration) parts.push(duration);
   return parts.join("_");
 }
 
 function directDownloadFilename(item) {
-  const ext = extensionForItem(item);
-  return `${safeFilename(downloadBaseName(item))}.${ext}`;
+  return `${safeFilename(downloadBaseName(item))}.${extensionForItem(item)}`;
 }
 
 function extensionForItem(item) {
   const format = String(item.format || formatFromUrl(item.url) || "mp4").toLowerCase();
-  if (/^[a-z0-9]{2,5}$/.test(format) && format !== "media") {
-    return format;
-  }
-  if (item.kind === "audio") {
-    return "mp3";
-  }
-  return "mp4";
+  if (/^[a-z0-9]{2,5}$/.test(format) && format !== "media") return format;
+  return item.kind === "audio" ? "mp3" : "mp4";
 }
 
 function buildDisplayTitle(item, sourceName, index) {
   const rawLabel = item.label || labelFromUrl(item.url);
   const label = cleanLabel(rawLabel);
-  if (label && !isNoisyLabel(rawLabel) && !isNoisyLabel(label)) {
-    return label;
-  }
+  if (label && !isNoisyLabel(rawLabel) && !isNoisyLabel(label)) return label;
   const topic = pageTopic();
   return `${topic ? `${topic} · ` : ""}${sourceName} ${String(index).padStart(2, "0")}`;
 }
 
 function buildDownloadTitle(item, sourceName, index) {
-  const title = buildDisplayTitle(item, sourceName, index);
-  const parts = [title];
-  if (item.quality) {
-    parts.push(item.quality);
-  }
+  const parts = [buildDisplayTitle(item, sourceName, index)];
+  if (item.quality) parts.push(item.quality);
   const duration = compactDuration(item.duration);
-  if (duration) {
-    parts.push(duration);
-  }
+  if (duration) parts.push(duration);
   return parts.join("_");
 }
 
 function sourceNameForItem(item) {
   const host = hostFromUrl(item.url);
-  if (/twimg\.com$/i.test(host) || /x\.com$/i.test(item.pageUrl || "")) {
-    return "X视频";
-  }
-  if (!host) {
-    return "网页视频";
-  }
+  if (/twimg\.com$/i.test(host) || /(?:^|\.)x\.com$/i.test(hostFromUrl(item.pageUrl || ""))) return "X视频";
+  if (!host) return "网页视频";
   return host.replace(/^www\./, "").split(".")[0] || "网页视频";
 }
 
 function pageTopic() {
   const title = cleanLabel(activeTab && activeTab.title);
-  if (!title) {
-    return "";
-  }
+  if (!title) return "";
   const cleaned = title
     .replace(/\s*[\/|-]\s*X\s*$/i, "")
     .replace(/\s*[\/|-]\s*Twitter\s*$/i, "")
@@ -698,25 +610,12 @@ function cleanLabel(value) {
 
 function isNoisyLabel(label) {
   const value = String(label || "").trim();
-  if (!value) {
-    return true;
-  }
-  if (/\.m3u8/i.test(value)) {
-    return true;
-  }
-  if (value.length >= 12 && !/[\s\u4e00-\u9fff]/.test(value) && /^[a-z0-9_-]+$/i.test(value)) {
-    return true;
-  }
-  return false;
+  if (!value || /\.m3u8/i.test(value)) return true;
+  return value.length >= 12 && !/[\s\u4e00-\u9fff]/.test(value) && /^[a-z0-9_-]+$/i.test(value);
 }
 
 function hostFromUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname;
-  } catch {
-    return "";
-  }
+  try { return new URL(url).hostname; } catch { return ""; }
 }
 
 function labelFromUrl(url) {
@@ -740,9 +639,7 @@ function canPreviewVideo(item) {
 function normalizeDisplayUrl(value) {
   try {
     const url = new URL(value);
-    if (url.protocol === "http:" || url.protocol === "https:") {
-      url.hash = "";
-    }
+    if (["http:", "https:"].includes(url.protocol)) url.hash = "";
     return url.href;
   } catch {
     return value;
@@ -758,20 +655,21 @@ function safeFilename(value) {
 }
 
 function formatDuration(value) {
-  if (!Number.isFinite(Number(value))) {
-    return "";
-  }
   const seconds = Math.floor(Number(value) || 0);
-  if (!seconds) {
-    return "";
-  }
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h) {
-    return `${h}:${pad2(m)}:${pad2(s)}`;
-  }
-  return `${m}:${pad2(s)}`;
+  if (!seconds) return "";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours ? `${hours}:${pad2(minutes)}:${pad2(remainder)}` : `${minutes}:${pad2(remainder)}`;
+}
+
+function compactDuration(value) {
+  const seconds = Math.floor(Number(value) || 0);
+  if (!seconds) return "";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours ? `${hours}h${pad2(minutes)}m${pad2(remainder)}s` : `${minutes}m${pad2(remainder)}s`;
 }
 
 function pad2(value) {
@@ -787,32 +685,9 @@ function qualityHeight(value) {
   return match ? Number(match[1]) : 0;
 }
 
-function qualityFromSize(width, height) {
-  const h = Number(height) || 0;
-  const w = Number(width) || 0;
-  if (h >= 2160 || w >= 3840) {
-    return "2160p";
-  }
-  if (h >= 1440 || w >= 2560) {
-    return "1440p";
-  }
-  if (h >= 1080 || w >= 1920) {
-    return "1080p";
-  }
-  if (h >= 720 || w >= 1280) {
-    return "720p";
-  }
-  if (h >= 480 || w >= 854) {
-    return "480p";
-  }
-  return "";
-}
-
 function formatBytes(value) {
   const bytes = Number(value) || 0;
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
+  if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB"];
   let size = bytes / 1024;
   let unitIndex = 0;
@@ -823,148 +698,63 @@ function formatBytes(value) {
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
 }
 
+function formatSpeed(value) {
+  const bytesPerSecond = Number(value) || 0;
+  return bytesPerSecond > 0 ? `${formatBytes(bytesPerSecond)}/s` : "";
+}
+
 function showProgress(progressEl, fillEl, textEl, speedEl, stopButton, value, text, speedText) {
-  if (!progressEl) {
-    return;
-  }
   progressEl.hidden = false;
-  if (stopButton) {
-    stopButton.hidden = false;
-  }
+  stopButton.hidden = false;
   updateProgress(progressEl, fillEl, textEl, speedEl, value, text, speedText);
 }
 
-function hideProgress(progressEl) {
-  if (progressEl) {
-    progressEl.hidden = true;
-  }
-}
-
 function updateProgress(progressEl, fillEl, textEl, speedEl, value, text, speedText) {
-  if (!progressEl || !fillEl || !textEl) {
-    return;
-  }
   const progress = Number(value);
   if (!Number.isFinite(progress) || progress <= 0) {
     progressEl.classList.add("indeterminate");
-    fillEl.style.width = "";
-    textEl.textContent = text || "处理中";
-    if (speedEl) {
-      speedEl.textContent = speedText || "";
-    }
-    return;
+    fillEl.style.width = "28%";
+  } else {
+    progressEl.classList.remove("indeterminate");
+    fillEl.style.width = `${Math.max(1, Math.min(100, Math.round(progress * 100)))}%`;
   }
-  progressEl.classList.remove("indeterminate");
-  const percent = Math.max(1, Math.min(100, Math.round(progress * 100)));
-  fillEl.style.width = `${percent}%`;
-  textEl.textContent = text || `${percent}%`;
-  if (speedEl) {
-    speedEl.textContent = speedText || "";
-  }
-}
-
-function progressLabel(job) {
-  const phase = job.phase === "transcoding" ? "转码" : "下载";
-  const progress = Number(job.progress);
-  if (!Number.isFinite(progress) || progress <= 0) {
-    return phase;
-  }
-  return `${Math.max(1, Math.min(99, Math.round(progress * 100)))}%`;
-}
-
-function formatSpeed(value) {
-  const bytes = Number(value) || 0;
-  if (bytes <= 0) {
-    return "";
-  }
-  return `${formatBytes(bytes)}/s`;
-}
-
-function compactDuration(value) {
-  if (!Number.isFinite(Number(value)) || Number(value) <= 0) {
-    return "";
-  }
-  const seconds = Math.floor(Number(value));
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  textEl.textContent = text || "";
+  speedEl.textContent = speedText || "";
 }
 
 function infoPlaceholder(item) {
   const title = escapeXml(displayName(item));
-  const source = escapeXml(item.sourceName || sourceNameForItem(item));
-  const quality = escapeXml(item.quality || "MP4");
-  const duration = escapeXml(formatDuration(item.duration) || "--:--");
-  const note = item.previewStatus === "failed" ? "预览失败" : (item.previewStatus === "pending" ? "生成预览" : "视频资源");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="280" height="156" viewBox="0 0 280 156">
-    <defs>
-      <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-        <stop offset="0" stop-color="#101827"/>
-        <stop offset="0.58" stop-color="#14263d"/>
-        <stop offset="1" stop-color="#08111f"/>
-      </linearGradient>
-    </defs>
-    <rect width="280" height="156" rx="10" fill="url(#g)"/>
-    <rect x="12" y="12" width="68" height="22" rx="5" fill="#083350" stroke="#126493"/>
-    <text x="46" y="27" text-anchor="middle" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="700" fill="#6dd3ff">${quality}</text>
-    <text x="18" y="72" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="800" fill="#e7e9ee">${source}</text>
-    <text x="18" y="96" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" fill="#aeb7c6">${truncateSvg(title, 20)}</text>
-    <text x="18" y="122" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" fill="#7f8da1">${escapeXml(note)}</text>
-    <rect x="208" y="116" width="56" height="24" rx="5" fill="rgba(0,0,0,0.58)"/>
-    <text x="236" y="132" text-anchor="middle" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" fill="#fff">${duration}</text>
-  </svg>`;
+  const subtitle = escapeXml([item.quality || "", formatDuration(item.duration), sourceNameForItem(item)].filter(Boolean).join(" · "));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="#101827"/><rect x="0" y="0" width="8" height="180" fill="#0a9ee8"/><text x="24" y="72" fill="#f4f7fb" font-family="Arial,sans-serif" font-size="22" font-weight="700">${truncateSvg(title, 19)}</text><text x="24" y="108" fill="#9aa8bb" font-family="Arial,sans-serif" font-size="15">${truncateSvg(subtitle, 30)}</text></svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function escapeXml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[char]));
 }
 
 function truncateSvg(value, max) {
   const text = String(value || "");
-  return escapeXml(text.length > max ? `${text.slice(0, max - 1)}...` : text);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-async function mapLimit(items, limit, worker) {
-  let index = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
-      const current = items[index];
-      index += 1;
-      await worker(current);
-    }
-  });
-  await Promise.all(runners);
+function isXTab(tab) {
+  try { return /(^|\.)(?:x\.com|twitter\.com)$/i.test(new URL(tab.url || "").hostname); } catch { return false; }
 }
 
-function chromeDownload(url, filename) {
-  return new Promise((resolve, reject) => {
-    chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      resolve(downloadId);
-    });
-  });
-}
-
-function shortError(error) {
-  const text = error && error.message ? error.message : String(error || "预览生成失败");
-  return text.replace(/\s+/g, " ").trim().slice(0, 90);
+function xTweetIdFromUrl(value) {
+  try {
+    const url = new URL(value || "");
+    if (!/(^|\.)(?:x\.com|twitter\.com)$/i.test(url.hostname)) return "";
+    const match = /\/status\/(\d{6,40})(?:\/|$)/.exec(url.pathname);
+    return match ? match[1] : "";
+  } catch {
+    return "";
+  }
 }
 
 function decodeURIComponentSafe(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
+  try { return decodeURIComponent(value); } catch { return value; }
 }
 
 function setStatus(text) {
@@ -979,11 +769,38 @@ function queryTabs(query) {
   return new Promise((resolve, reject) => {
     chrome.tabs.query(query, (tabs) => {
       const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      resolve(tabs);
+      if (error) reject(new Error(error.message));
+      else resolve(tabs || []);
+    });
+  });
+}
+
+function getTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(tab);
+    });
+  });
+}
+
+function executeContentScript(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["src/content.js"] }, (results) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(results || []);
+    });
+  });
+}
+
+function executeXPageHook(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["src/x-media-hook.js"] }, (results) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(results || []);
     });
   });
 }
@@ -992,11 +809,8 @@ function sendRuntimeMessage(message) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      resolve(response);
+      if (error) reject(new Error(error.message));
+      else resolve(response);
     });
   });
 }
@@ -1005,19 +819,23 @@ function sendTabMessage(tabId, message) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       const error = chrome.runtime.lastError;
-      if (error) {
-        reject(new Error(error.message));
-        return;
-      }
-      resolve(response);
+      if (error) reject(new Error(error.message));
+      else resolve(response);
     });
   });
 }
 
-globalThis.__vidPocketPopupTest = {
-  prepareDisplayItems,
-  displayName,
-  downloadBaseName,
-  infoPlaceholder,
-  thumbnailCache
-};
+if (typeof globalThis !== "undefined") {
+  globalThis.__VIDPOCKET_POPUP_TEST_API__ = {
+    prepareDisplayItems,
+    displayName,
+    downloadBaseName,
+    isDisplayableDownload,
+    applyCachedThumbnail,
+    thumbnailCache,
+    directDownloadFilename,
+    infoPlaceholder,
+    xTweetIdFromUrl,
+    requestActiveXStatusScan
+  };
+}

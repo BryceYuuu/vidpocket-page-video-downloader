@@ -4,10 +4,23 @@ const DIRECT_MEDIA_EXT_RE = /\.(mp4|m4v|mov|webm|mkv|avi|mp3|m4a|aac|ogg|oga|opu
 const PLAYLIST_EXT_RE = /\.(m3u8|mpd)(?:[?#]|$)/i;
 const STREAM_SEGMENT_EXT_RE = /\.(m4s|cmf[av]|ts)(?:[?#]|$)/i;
 const DIRECT_DOWNLOAD_KINDS = new Set(["video", "audio", "media"]);
+const JOB_STORAGE_KEY = "vidpocketDownloadJobs";
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const ACTIVE_JOB_STATES = new Set(["queued", "preparing", "downloading", "processing", "saving"]);
+const MAX_X_TWEETS_PER_SCAN = 12;
+const MAX_X_SYNDICATION_BYTES = 2 * 1024 * 1024;
+const X_SYNDICATION_CACHE_MS = 2 * 60 * 1000;
 
 const mediaByTab = new Map();
 const probesInFlight = new Set();
 const hlsProbesInFlight = new Set();
+const thumbnailProbesInFlight = new Set();
+const downloadJobs = new Map();
+const xSyndicationCache = new Map();
+const xSyndicationInFlight = new Map();
+let jobsLoadPromise = loadStoredJobs();
+let persistJobsTimer = 0;
+let creatingOffscreenDocument = null;
 
 chrome.action.setBadgeBackgroundColor({ color: "#0f766e" });
 
@@ -21,6 +34,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     updateBadge(tabId);
   }
 });
+
+if (chrome.downloads && chrome.downloads.onChanged) {
+  chrome.downloads.onChanged.addListener((delta) => {
+    handleChromeDownloadChanged(delta).catch(() => {});
+  });
+}
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
@@ -59,6 +78,9 @@ chrome.webRequest.onHeadersReceived.addListener(
 );
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.target && message.target !== "background") {
+    return false;
+  }
   (async () => {
     if (!message || typeof message.type !== "string") {
       return { ok: false, error: "Unknown message" };
@@ -91,12 +113,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message.type === "getCandidates") {
-      const tabId = Number(message.tabId);
-      return { ok: true, items: getCandidates(tabId) };
+      const tabId = resolveTabId(message, sender);
+      const state = mediaByTab.get(tabId);
+      return { ok: true, items: getCandidates(tabId), xScan: state && state.xScan ? state.xScan : null };
+    }
+
+    if (message.type === "scanXTweets") {
+      const tabId = resolveTabId(message, sender);
+      return scanXTweetIds(tabId, message.tweetIds, {
+        pageUrl: message.pageUrl || (sender.tab && sender.tab.url) || "",
+        pageTitle: message.pageTitle || (sender.tab && sender.tab.title) || ""
+      });
     }
 
     if (message.type === "clearTab") {
-      const tabId = Number(message.tabId);
+      const tabId = resolveTabId(message, sender);
       mediaByTab.delete(tabId);
       updateBadge(tabId);
       return { ok: true };
@@ -115,7 +146,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "download") {
       const url = String(message.url || "");
-      const tabId = Number(message.tabId);
+      const tabId = resolveTabId(message, sender);
       const id = String(message.id || normalizeUrl(url));
       const candidate = getCandidate(tabId, id);
       const kind = candidate ? candidate.kind : String(message.kind || classifyMedia(url, ""));
@@ -123,7 +154,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: false, error: "这个资源不是可直接下载的文件地址。" };
       }
       const filename = cleanFilename(message.filename || message.label || guessLabel(url, ""));
-      const downloadId = await downloadUrl(url, filename);
+      const job = await startDirectDownloadJob({ tabId, candidate, url, filename });
+      return { ok: true, downloadId: job.downloadId, job };
+    }
+
+    if (message.type === "startHlsDownload") {
+      const tabId = resolveTabId(message, sender);
+      const id = String(message.id || normalizeUrl(message.url || ""));
+      const candidate = getCandidate(tabId, id);
+      if (!candidate || candidate.kind !== "hls" || !/^https?:\/\//i.test(candidate.url)) {
+        return { ok: false, error: "该条目不是可处理的 HLS 资源。" };
+      }
+      const job = await startHlsDownloadJob(tabId, candidate, message.filename || "");
+      return { ok: true, job };
+    }
+
+    if (message.type === "getDownloadJobs") {
+      await jobsLoadPromise;
+      await refreshChromeDownloadJobs();
+      const tabId = resolveTabId(message, sender);
+      return { ok: true, jobs: getDownloadJobs(tabId) };
+    }
+
+    if (message.type === "cancelDownloadJob") {
+      await jobsLoadPromise;
+      const job = downloadJobs.get(String(message.jobId || ""));
+      if (!job) {
+        return { ok: false, error: "下载任务不存在。" };
+      }
+      await cancelDownloadJob(job);
+      return { ok: true };
+    }
+
+    if (message.type === "requestHlsThumbnail") {
+      const tabId = resolveTabId(message, sender);
+      const id = String(message.id || "");
+      return requestHlsThumbnail(tabId, id);
+    }
+
+    if (message.type === "hlsJobProgress") {
+      assertOffscreenSender(sender);
+      await jobsLoadPromise;
+      updateDownloadJob(String(message.jobId || ""), message.patch || {});
+      return { ok: true };
+    }
+
+    if (message.type === "hlsFileReady") {
+      assertOffscreenSender(sender);
+      await jobsLoadPromise;
+      const jobId = String(message.jobId || "");
+      const job = downloadJobs.get(jobId);
+      if (!job || job.kind !== "hls") {
+        return { ok: false, error: "HLS 任务不存在。" };
+      }
+      const downloadId = await downloadUrl(String(message.blobUrl || ""), cleanFilename(message.filename || job.filename));
+      updateDownloadJob(jobId, {
+        status: "saving",
+        progress: 0.99,
+        downloadId,
+        bytesReceived: Number(message.size) || job.bytesReceived || 0,
+        totalBytes: Number(message.size) || job.totalBytes || 0,
+        message: "Chrome 正在保存"
+      });
       return { ok: true, downloadId };
     }
 
@@ -134,6 +226,786 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+
+function resolveTabId(message, sender) {
+  const explicit = Number(message && message.tabId);
+  if (Number.isInteger(explicit) && explicit >= 0) {
+    return explicit;
+  }
+  const senderId = sender && sender.tab && sender.tab.id;
+  return typeof senderId === "number" ? senderId : NaN;
+}
+
+async function scanXTweetIds(tabId, rawTweetIds, pageContext = {}) {
+  if (!Number.isInteger(Number(tabId)) || Number(tabId) < 0) {
+    return { ok: false, error: "无法确定当前 X 标签页。" };
+  }
+  const tweetIds = Array.from(new Set((Array.isArray(rawTweetIds) ? rawTweetIds : [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => /^\d{6,40}$/.test(value))))
+    .slice(0, MAX_X_TWEETS_PER_SCAN);
+  if (!tweetIds.length) {
+    return { ok: true, requested: 0, found: 0 };
+  }
+
+  const state = getTabState(Number(tabId));
+  state.context = {
+    ...(state.context || {}),
+    pageUrl: pageContext.pageUrl || (state.context && state.context.pageUrl) || "",
+    pageTitle: pageContext.pageTitle || (state.context && state.context.pageTitle) || ""
+  };
+  state.xScan = {
+    status: "loading",
+    requested: tweetIds.length,
+    found: 0,
+    error: "",
+    updatedAt: Date.now()
+  };
+
+  const settled = await Promise.allSettled(tweetIds.map((tweetId) => fetchXSyndicationCandidates(tweetId)));
+  const mediaUrls = new Set();
+  const errors = [];
+  settled.forEach((result) => {
+    if (result.status === "rejected") {
+      errors.push(result.reason && result.reason.message ? result.reason.message : String(result.reason || "X 媒体查询失败"));
+      return;
+    }
+    result.value.forEach((candidate) => {
+      mediaUrls.add(candidate.url);
+      addCandidate(Number(tabId), {
+        ...candidate,
+        pageUrl: pageContext.pageUrl || "",
+        frameUrl: pageContext.pageUrl || ""
+      });
+    });
+  });
+
+  const found = mediaUrls.size;
+  const allFailed = errors.length === tweetIds.length;
+  state.xScan = {
+    status: allFailed ? "error" : "done",
+    requested: tweetIds.length,
+    found,
+    error: allFailed ? cleanXScanError(errors[0]) : "",
+    updatedAt: Date.now()
+  };
+  updateBadge(Number(tabId));
+  return {
+    ok: !allFailed,
+    requested: tweetIds.length,
+    found,
+    error: state.xScan.error
+  };
+}
+
+async function fetchXSyndicationCandidates(tweetId) {
+  const cached = xSyndicationCache.get(tweetId);
+  if (cached && Date.now() - cached.savedAt < X_SYNDICATION_CACHE_MS) {
+    return cached.candidates;
+  }
+  if (xSyndicationInFlight.has(tweetId)) {
+    return xSyndicationInFlight.get(tweetId);
+  }
+
+  const task = (async () => {
+    const token = xSyndicationToken(tweetId);
+    const endpoint = new URL("https://cdn.syndication.twimg.com/tweet-result");
+    endpoint.searchParams.set("id", tweetId);
+    endpoint.searchParams.set("lang", "en");
+    endpoint.searchParams.set("token", token);
+    const response = await fetch(endpoint.href, {
+      credentials: "omit",
+      redirect: "follow",
+      cache: "no-store"
+    });
+    if (response.status === 404) {
+      xSyndicationCache.set(tweetId, { candidates: [], savedAt: Date.now() });
+      return [];
+    }
+    if (!response.ok) {
+      throw new Error(`X 公开媒体接口返回 ${response.status}`);
+    }
+    const declaredLength = Number(response.headers && response.headers.get && response.headers.get("content-length")) || 0;
+    if (declaredLength > MAX_X_SYNDICATION_BYTES) {
+      throw new Error("X 公开媒体结果过大");
+    }
+    const text = await response.text();
+    if (!text || text.length > MAX_X_SYNDICATION_BYTES) {
+      throw new Error("X 公开媒体结果无效");
+    }
+    const candidates = extractXSyndicationCandidates(JSON.parse(text), tweetId);
+    xSyndicationCache.set(tweetId, { candidates, savedAt: Date.now() });
+    return candidates;
+  })().finally(() => {
+    xSyndicationInFlight.delete(tweetId);
+  });
+
+  xSyndicationInFlight.set(tweetId, task);
+  return task;
+}
+
+function xSyndicationToken(tweetId) {
+  const numericId = BigInt(tweetId);
+  const divisor = 1000000000000000n;
+  const integerPart = Number(numericId / divisor);
+  const fractionalPart = Number(numericId % divisor) / Number(divisor);
+  return ((integerPart + fractionalPart) * Math.PI).toString(36).replace(/(0+|\.)/g, "") || "0";
+}
+
+function extractXSyndicationCandidates(payload, tweetId) {
+  const results = new Map();
+  const visited = new WeakSet();
+  let visitedNodes = 0;
+
+  visit(payload, {
+    label: cleanXTweetLabel(payload && payload.text),
+    thumbnail: "",
+    duration: 0,
+    width: 0,
+    height: 0,
+    mediaId: tweetId
+  }, 0);
+  return Array.from(results.values());
+
+  function visit(value, inherited, depth) {
+    if (value === null || value === undefined || depth > 32 || visitedNodes >= 12000) {
+      return;
+    }
+    if (typeof value !== "object") {
+      return;
+    }
+    if (visited.has(value)) {
+      return;
+    }
+    visited.add(value);
+    visitedNodes += 1;
+
+    const videoInfo = objectOrEmpty(value.video_info || value.videoInfo);
+    const additionalInfo = objectOrEmpty(value.additional_media_info || value.additionalMediaInfo);
+    const originalInfo = objectOrEmpty(value.original_info || value.originalInfo);
+    const duration = xDurationSeconds(firstPositiveNumber([
+      value.duration_ms,
+      value.duration_millis,
+      value.durationMillis,
+      value.durationMs,
+      videoInfo.duration_ms,
+      videoInfo.duration_millis,
+      videoInfo.durationMillis,
+      videoInfo.durationMs
+    ]));
+    const context = {
+      label: cleanXTweetLabel(firstNonEmptyText([
+        additionalInfo.title,
+        value.full_text,
+        value.fullText,
+        value.text,
+        inherited.label
+      ])),
+      thumbnail: firstXSyndicationImage([
+        value.preview_image_url,
+        value.previewImageUrl,
+        value.media_url_https,
+        value.media_url,
+        value.poster,
+        inherited.thumbnail
+      ]),
+      duration: duration || inherited.duration || 0,
+      width: xSafeDimension(value.width || value.w || originalInfo.width || originalInfo.w) || inherited.width || 0,
+      height: xSafeDimension(value.height || value.h || originalInfo.height || originalInfo.h) || inherited.height || 0,
+      mediaId: firstNonEmptyText([value.media_key, value.mediaKey, value.id_str, value.id, inherited.mediaId], 100)
+    };
+
+    const variantArrays = [];
+    if (Array.isArray(value.variants)) variantArrays.push(value.variants);
+    if (Array.isArray(videoInfo.variants)) variantArrays.push(videoInfo.variants);
+    const seenArrays = new Set();
+    variantArrays.forEach((variants) => {
+      if (seenArrays.has(variants)) return;
+      seenArrays.add(variants);
+      variants.forEach((variant) => {
+        if (!variant || typeof variant !== "object") return;
+        addXSyndicationVariant(results, variant.url || variant.src || "", {
+          ...context,
+          contentType: String(variant.content_type || variant.contentType || variant.type || ""),
+          bitrate: firstPositiveNumber([variant.bitrate, variant.bit_rate, variant.bitRate])
+        });
+      });
+    });
+
+    if (Array.isArray(value)) {
+      value.forEach((child) => visit(child, context, depth + 1));
+      return;
+    }
+    Object.values(value).forEach((child) => visit(child, context, depth + 1));
+  }
+}
+
+function addXSyndicationVariant(results, rawUrl, context) {
+  const url = sanitizeXSyndicationMediaUrl(rawUrl);
+  if (!url) {
+    return;
+  }
+  const dimensions = xDimensionsFromMediaUrl(url);
+  const isHls = /\.m3u8(?:[?#]|$)/i.test(url);
+  const width = dimensions.width || Number(context.width) || 0;
+  const height = dimensions.height || Number(context.height) || 0;
+  const candidate = {
+    url,
+    kind: isHls ? "hls" : "video",
+    source: "page-api",
+    label: context.label || "X 视频",
+    contentType: context.contentType || (isHls ? "application/x-mpegURL" : "video/mp4"),
+    duration: Number(context.duration) || 0,
+    width,
+    height,
+    quality: inferQuality(url, width, height),
+    format: isHls ? "HLS" : "MP4",
+    thumbnail: sanitizeXSyndicationImageUrl(context.thumbnail),
+    mediaId: String(context.mediaId || ""),
+    bitrate: Number(context.bitrate) || 0
+  };
+  const existing = results.get(url);
+  results.set(url, existing ? {
+    ...existing,
+    ...candidate,
+    label: candidate.label || existing.label,
+    thumbnail: candidate.thumbnail || existing.thumbnail,
+    duration: candidate.duration || existing.duration,
+    width: candidate.width || existing.width,
+    height: candidate.height || existing.height,
+    quality: candidate.quality || existing.quality,
+    bitrate: candidate.bitrate || existing.bitrate
+  } : candidate);
+}
+
+function sanitizeXSyndicationMediaUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "video.twimg.com") {
+      return "";
+    }
+    return /\.(?:mp4|m3u8)(?:[?#]|$)/i.test(url.href) ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeXSyndicationImageUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "pbs.twimg.com" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function firstXSyndicationImage(values) {
+  for (const value of values) {
+    const url = sanitizeXSyndicationImageUrl(value);
+    if (url) return url;
+  }
+  return "";
+}
+
+function xDimensionsFromMediaUrl(value) {
+  const match = /(?:^|\/)(\d{2,4})x(\d{2,4})(?:\/|$)/.exec(String(value || ""));
+  return match ? { width: Number(match[1]) || 0, height: Number(match[2]) || 0 } : { width: 0, height: 0 };
+}
+
+function xDurationSeconds(milliseconds) {
+  const seconds = Number(milliseconds) / 1000;
+  return seconds > 0 && seconds <= 24 * 60 * 60 ? seconds : 0;
+}
+
+function xSafeDimension(value) {
+  const number = Number(value) || 0;
+  return number > 0 && number <= 16384 ? number : 0;
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function firstPositiveNumber(values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return 0;
+}
+
+function firstNonEmptyText(values, maxLength = 180) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const text = value.replace(/\s+/g, " ").trim();
+    if (text) return text.slice(0, maxLength);
+  }
+  return "";
+}
+
+function cleanXTweetLabel(value) {
+  return String(value || "")
+    .replace(/https:\/\/t\.co\/[A-Za-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+}
+
+function cleanXScanError(value) {
+  const text = String(value || "X 视频解析失败").replace(/\s+/g, " ").trim();
+  return text.slice(0, 160);
+}
+
+function sendTabMessage(tabId, message) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+async function startDirectDownloadJob({ tabId, candidate, url, filename }) {
+  await jobsLoadPromise;
+  const existing = findActiveJob(tabId, candidate.id);
+  if (existing) {
+    return existing;
+  }
+  const job = createDownloadJob({
+    tabId,
+    sourceId: candidate.id,
+    kind: "direct",
+    url,
+    filename,
+    totalBytes: Number(candidate.contentLength) || 0
+  });
+  downloadJobs.set(job.id, job);
+  persistJobsSoon();
+  try {
+    const downloadId = await downloadUrl(url, filename);
+    return updateDownloadJob(job.id, {
+      status: "downloading",
+      progress: 0,
+      downloadId,
+      message: "Chrome 正在下载"
+    });
+  } catch (error) {
+    updateDownloadJob(job.id, { status: "error", error: error.message || String(error) });
+    throw error;
+  }
+}
+
+async function startHlsDownloadJob(tabId, candidate, requestedFilename) {
+  await jobsLoadPromise;
+  const existing = findActiveJob(tabId, candidate.id);
+  if (existing) {
+    return existing;
+  }
+  const filename = ensureMp4Filename(cleanFilename(requestedFilename || candidate.label || "video"));
+  const job = createDownloadJob({
+    tabId,
+    sourceId: candidate.id,
+    kind: "hls",
+    url: candidate.url,
+    filename,
+    totalBytes: 0
+  });
+  downloadJobs.set(job.id, job);
+  persistJobsSoon();
+
+  const response = await sendOffscreenMessage({
+    type: "startHlsDownload",
+    job: {
+      ...job,
+      pageUrl: candidate.pageUrl || "",
+      height: candidate.height || qualityNumber(candidate.quality),
+      relatedHlsUrls: getRelatedHlsUrls(tabId, candidate)
+    }
+  });
+  if (!response || !response.ok) {
+    const error = new Error((response && response.error) || "无法启动 HLS 处理任务。");
+    updateDownloadJob(job.id, { status: "error", error: error.message });
+    throw error;
+  }
+  return job;
+}
+
+function createDownloadJob({ tabId, sourceId, kind, url, filename, totalBytes }) {
+  const now = Date.now();
+  return {
+    id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    tabId: Number(tabId),
+    sourceId: String(sourceId || ""),
+    kind,
+    url,
+    filename,
+    status: "queued",
+    progress: 0,
+    bytesReceived: 0,
+    totalBytes: Number(totalBytes) || 0,
+    speed: 0,
+    message: "准备中",
+    error: "",
+    downloadId: null,
+    createdAt: now,
+    updatedAt: now,
+    sampleBytes: 0,
+    sampleAt: now
+  };
+}
+
+function updateDownloadJob(jobId, patch) {
+  const existing = downloadJobs.get(jobId);
+  if (!existing) {
+    return null;
+  }
+  const updated = {
+    ...existing,
+    ...patch,
+    id: existing.id,
+    tabId: existing.tabId,
+    sourceId: existing.sourceId,
+    kind: existing.kind,
+    updatedAt: Date.now()
+  };
+  if (Number.isFinite(Number(updated.progress))) {
+    updated.progress = Math.max(0, Math.min(1, Number(updated.progress)));
+  } else {
+    updated.progress = 0;
+  }
+  updated.bytesReceived = Math.max(0, Number(updated.bytesReceived) || 0);
+  updated.totalBytes = Math.max(0, Number(updated.totalBytes) || 0);
+  updated.speed = Math.max(0, Number(updated.speed) || 0);
+  updated.error = String(updated.error || "").slice(0, 240);
+  updated.message = String(updated.message || "").slice(0, 100);
+  downloadJobs.set(jobId, updated);
+  persistJobsSoon();
+  return updated;
+}
+
+function findActiveJob(tabId, sourceId) {
+  return Array.from(downloadJobs.values()).find((job) =>
+    job.tabId === Number(tabId) && job.sourceId === String(sourceId) && ACTIVE_JOB_STATES.has(job.status)
+  ) || null;
+}
+
+function getDownloadJobs(tabId) {
+  cleanupDownloadJobs();
+  return Array.from(downloadJobs.values())
+    .filter((job) => !Number.isFinite(Number(tabId)) || job.tabId === Number(tabId))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(({ sampleBytes: _sampleBytes, sampleAt: _sampleAt, ...job }) => job);
+}
+
+async function cancelDownloadJob(job) {
+  if (typeof job.downloadId === "number") {
+    await cancelChromeDownload(job.downloadId).catch(() => {});
+  }
+  if (job.kind === "hls") {
+    await sendOffscreenMessage({ type: "cancelHlsDownload", jobId: job.id }).catch(() => {});
+  }
+  updateDownloadJob(job.id, {
+    status: "canceled",
+    speed: 0,
+    message: "已停止",
+    error: ""
+  });
+}
+
+async function requestHlsThumbnail(tabId, id) {
+  const candidate = getCandidate(tabId, id);
+  if (!candidate || candidate.kind !== "hls") {
+    return { ok: false, error: "HLS 条目不存在。" };
+  }
+  if (candidate.thumbnail) {
+    return { ok: true, thumbnail: candidate.thumbnail };
+  }
+  const key = `${tabId}:${id}`;
+  if (thumbnailProbesInFlight.has(key)) {
+    return { ok: true, pending: true };
+  }
+  thumbnailProbesInFlight.add(key);
+  candidate.previewStatus = "pending";
+  try {
+    const result = await sendOffscreenMessage({
+      type: "generateHlsThumbnail",
+      item: {
+        id,
+        url: candidate.url,
+        duration: candidate.duration || 0,
+        height: candidate.height || qualityNumber(candidate.quality),
+        relatedHlsUrls: getRelatedHlsUrls(tabId, candidate)
+      }
+    });
+    const state = mediaByTab.get(tabId);
+    const current = state && state.items.get(id);
+    if (!current) {
+      return result;
+    }
+    if (!result || !result.ok || !sanitizeThumbnail(result.thumbnail)) {
+      state.items.set(id, {
+        ...current,
+        previewStatus: "failed",
+        previewError: String((result && result.error) || "无法从该流抽取画面。").slice(0, 160)
+      });
+      return result || { ok: false, error: "预览生成失败。" };
+    }
+    state.items.set(id, {
+      ...current,
+      thumbnail: sanitizeThumbnail(result.thumbnail),
+      previewStatus: "done",
+      previewError: "",
+      duration: current.duration || Number(result.duration) || 0,
+      width: current.width || Number(result.width) || 0,
+      height: current.height || Number(result.height) || 0,
+      quality: current.quality || inferQuality(current.url, Number(result.width) || 0, Number(result.height) || 0),
+      lastSeen: Date.now()
+    });
+    return result;
+  } finally {
+    thumbnailProbesInFlight.delete(key);
+  }
+}
+
+function getRelatedHlsUrls(tabId, candidate) {
+  const state = mediaByTab.get(tabId);
+  if (!state) {
+    return [candidate.url];
+  }
+  return Array.from(state.items.values())
+    .filter((item) => item.kind === "hls")
+    .filter((item) => {
+      if (candidate.mediaId && item.mediaId) {
+        return candidate.mediaId === item.mediaId;
+      }
+      return !candidate.pageUrl || !item.pageUrl || candidate.pageUrl === item.pageUrl;
+    })
+    .map((item) => item.url)
+    .slice(0, 24);
+}
+
+async function handleChromeDownloadChanged(delta) {
+  await jobsLoadPromise;
+  const job = Array.from(downloadJobs.values()).find((item) => item.downloadId === delta.id);
+  if (!job) {
+    return;
+  }
+  if (delta.state && delta.state.current === "complete") {
+    updateDownloadJob(job.id, {
+      status: "complete",
+      progress: 1,
+      speed: 0,
+      message: "已保存",
+      error: ""
+    });
+    releaseOffscreenBlob(job);
+    return;
+  }
+  if (delta.state && delta.state.current === "interrupted") {
+    updateDownloadJob(job.id, {
+      status: delta.error && delta.error.current === "USER_CANCELED" ? "canceled" : "error",
+      speed: 0,
+      message: "下载中断",
+      error: delta.error && delta.error.current ? delta.error.current : "下载中断"
+    });
+    releaseOffscreenBlob(job);
+  }
+}
+
+async function refreshChromeDownloadJobs() {
+  const jobs = Array.from(downloadJobs.values()).filter((job) => typeof job.downloadId === "number" && ACTIVE_JOB_STATES.has(job.status));
+  await Promise.all(jobs.map(async (job) => {
+    const item = await searchChromeDownload(job.downloadId).catch(() => null);
+    if (!item) {
+      return;
+    }
+    const now = Date.now();
+    const bytesReceived = Number(item.bytesReceived) || 0;
+    const elapsed = Math.max(0.1, (now - (job.sampleAt || now)) / 1000);
+    const speed = Math.max(0, bytesReceived - (job.sampleBytes || 0)) / elapsed;
+    const totalBytes = Number(item.totalBytes) || job.totalBytes || 0;
+    if (item.state === "complete") {
+      updateDownloadJob(job.id, { status: "complete", progress: 1, bytesReceived, totalBytes, speed: 0, message: "已保存" });
+      releaseOffscreenBlob(job);
+      return;
+    }
+    if (item.state === "interrupted") {
+      updateDownloadJob(job.id, { status: "error", bytesReceived, totalBytes, speed: 0, message: "下载中断", error: item.error || "下载中断" });
+      releaseOffscreenBlob(job);
+      return;
+    }
+    updateDownloadJob(job.id, {
+      status: job.status === "saving" ? "saving" : "downloading",
+      progress: totalBytes ? Math.min(0.99, bytesReceived / totalBytes) : job.progress,
+      bytesReceived,
+      totalBytes,
+      speed,
+      sampleBytes: bytesReceived,
+      sampleAt: now,
+      message: item.paused ? "已暂停" : (job.kind === "hls" ? "Chrome 正在保存" : "Chrome 正在下载")
+    });
+  }));
+}
+
+function releaseOffscreenBlob(job) {
+  if (job.kind !== "hls") {
+    return;
+  }
+  sendOffscreenMessage({ type: "releaseBlob", jobId: job.id }).catch(() => {});
+}
+
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen || typeof chrome.offscreen.createDocument !== "function") {
+    throw new Error("当前 Chrome 版本不支持扩展内 HLS 处理。");
+  }
+  const documentUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  let exists = false;
+  if (typeof chrome.runtime.getContexts === "function") {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [documentUrl]
+    });
+    exists = contexts.length > 0;
+  } else if (typeof clients !== "undefined" && clients.matchAll) {
+    const matched = await clients.matchAll();
+    exists = matched.some((client) => client.url === documentUrl);
+  }
+  if (exists) {
+    return;
+  }
+  if (!creatingOffscreenDocument) {
+    creatingOffscreenDocument = chrome.offscreen.createDocument({
+      url: OFFSCREEN_DOCUMENT_PATH,
+      reasons: ["BLOBS", "WORKERS"],
+      justification: "Download and locally merge user-selected unencrypted HLS segments into an MP4 file."
+    }).finally(() => {
+      creatingOffscreenDocument = null;
+    });
+  }
+  await creatingOffscreenDocument;
+}
+
+async function sendOffscreenMessage(message) {
+  await ensureOffscreenDocument();
+  return sendRuntimeMessage({ ...message, target: "offscreen" });
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+function assertOffscreenSender(sender) {
+  const expected = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  if (!sender || sender.url !== expected) {
+    throw new Error("拒绝未验证的媒体处理消息。");
+  }
+}
+
+async function loadStoredJobs() {
+  if (!chrome.storage || !chrome.storage.local) {
+    return;
+  }
+  try {
+    const result = await storageGet(JOB_STORAGE_KEY);
+    const stored = Array.isArray(result && result[JOB_STORAGE_KEY]) ? result[JOB_STORAGE_KEY] : [];
+    stored.slice(-100).forEach((raw) => {
+      if (!raw || !raw.id) {
+        return;
+      }
+      const job = { ...raw };
+      if (job.kind === "hls" && ACTIVE_JOB_STATES.has(job.status) && typeof job.downloadId !== "number") {
+        job.status = "error";
+        job.error = "浏览器重启后 HLS 处理任务已中断，请重新下载。";
+        job.speed = 0;
+      }
+      downloadJobs.set(job.id, job);
+    });
+  } catch {
+    // Download history is optional; current-session downloads still work.
+  }
+}
+
+function persistJobsSoon() {
+  if (!chrome.storage || !chrome.storage.local) {
+    return;
+  }
+  clearTimeout(persistJobsTimer);
+  persistJobsTimer = setTimeout(() => {
+    cleanupDownloadJobs();
+    const stored = Array.from(downloadJobs.values()).slice(-100);
+    storageSet({ [JOB_STORAGE_KEY]: stored }).catch(() => {});
+  }, 300);
+}
+
+function cleanupDownloadJobs() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  Array.from(downloadJobs.entries()).forEach(([id, job]) => {
+    if (job.updatedAt < cutoff && !ACTIVE_JOB_STATES.has(job.status)) {
+      downloadJobs.delete(id);
+    }
+  });
+}
+
+function storageGet(key) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(key, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(result || {});
+    });
+  });
+}
+
+function storageSet(value) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(value, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
+function searchChromeDownload(downloadId) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.search({ id: downloadId }, (items) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(items && items[0] ? items[0] : null);
+    });
+  });
+}
+
+function cancelChromeDownload(downloadId) {
+  return new Promise((resolve, reject) => {
+    chrome.downloads.cancel(downloadId, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
+function ensureMp4Filename(value) {
+  return /\.mp4$/i.test(value) ? value : `${value}.mp4`;
+}
+
+function qualityNumber(value) {
+  return Number((/(\d{3,4})p/i.exec(String(value || "")) || [])[1]) || 0;
+}
 
 function addCandidate(tabId, rawCandidate) {
   const url = sanitizeUrl(rawCandidate.url);
@@ -181,6 +1053,8 @@ function addCandidate(tabId, rawCandidate) {
     quality: rawCandidate.quality || (existing && existing.quality) || inferQuality(url, width, height),
     format: bestFormat(rawCandidate.format, existing && existing.format, formatFor(url, kind, contentType)),
     thumbnail: sanitizeThumbnail(rawCandidate.thumbnail) || (existing && existing.thumbnail) || thumbnailFromContext(kind, tabContext),
+    previewStatus: rawCandidate.previewStatus || (existing && existing.previewStatus) || "",
+    previewError: rawCandidate.previewError || (existing && existing.previewError) || "",
     mediaId: rawCandidate.mediaId || (existing && existing.mediaId) || "",
     downloadable,
     probeStatus: needsProbe ? "checking" : ((downloadable || !DIRECT_DOWNLOAD_KINDS.has(kind)) ? "done" : "blocked"),
@@ -237,10 +1111,8 @@ function getTabState(tabId) {
 }
 
 function thumbnailFromContext(kind, context) {
-  if (kind === "hls" || kind === "dash") {
-    return "";
-  }
-  return (context && context.thumbnail) || "";
+  // A page-level image cannot be safely associated with one item on multi-video pages.
+  return "";
 }
 
 function getCandidates(tabId) {
@@ -257,11 +1129,18 @@ function getCandidate(tabId, id) {
 }
 
 function updateBadge(tabId) {
-  const count = getCandidates(tabId).length;
+  const count = getCandidates(tabId).filter(isBadgeCandidate).length;
   chrome.action.setBadgeText({
     tabId,
     text: count ? String(Math.min(count, 99)) : ""
   });
+}
+
+function isBadgeCandidate(item) {
+  return item && (
+    item.kind === "hls" ||
+    (DIRECT_DOWNLOAD_KINDS.has(item.kind) && (item.downloadable || item.probeStatus === "checking"))
+  );
 }
 
 function getHeader(headers, name) {

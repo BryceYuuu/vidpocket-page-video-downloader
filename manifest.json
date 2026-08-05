@@ -1,13 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "VidPocket",
+  "name": "VidPocket-网页视频下载",
   "short_name": "VidPocket",
-  "version": "0.4.3",
-  "description": "Chrome webpage video downloader for directly accessible media and HLS streams.",
+  "version": "0.5.1",
+  "description": "网页视频下载工具，在右上角弹窗中识别预览并保存可直接访问的 MP4/WebM 和未加密 HLS 视频。",
+  "minimum_chrome_version": "109",
   "permissions": [
     "downloads",
     "tabs",
-    "webRequest"
+    "scripting",
+    "webRequest",
+    "offscreen",
+    "storage"
   ],
   "host_permissions": [
     "http://*/*",
@@ -15,6 +19,9 @@
   ],
   "background": {
     "service_worker": "src/background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'"
   },
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -35,6 +42,18 @@
   "content_scripts": [
     {
       "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "src/x-media-hook.js"
+      ],
+      "all_frames": false,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
         "http://*/*",
         "https://*/*"
       ],
@@ -42,7 +61,8 @@
         "src/content.js"
       ],
       "all_frames": true,
-      "run_at": "document_idle"
+      "run_at": "document_start",
+      "world": "ISOLATED"
     }
   ]
 }

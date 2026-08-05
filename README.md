@@ -1,179 +1,112 @@
-# VidPocket · 视频口袋
+# VidPocket
 
-![VidPocket logo](assets/logo.png)
+**VidPocket-网页视频下载** is a local-first Chrome extension for detecting, previewing, and saving directly accessible webpage media.
 
-> **Pocket directly accessible web videos as local MP4 files.**
-> 把网页上能直接访问的视频，一键存到本地。
+[简体中文](README.zh-CN.md) | [Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii) | [Privacy Policy](PRIVACY.md)
 
-A local-first Chrome extension that detects and downloads directly accessible media from any webpage — including unencrypted HLS streams via a local FFmpeg helper.
+## Latest Release
 
-专为**合法存档、调试、研究和个人媒体管理**设计的 Chrome 扩展。在本地运行，无后端，无遥测。
+**Current stable version: [v0.5.1](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.1)**
 
----
+- **Recommended installation:** [Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii)
+- **Latest package and source:** [GitHub Releases](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/latest)
+- **Complete version history:** [CHANGELOG.md](CHANGELOG.md)
 
-## Features · 功能
+### What's New in v0.5.1
 
-| | English | 中文 |
-|---|---|---|
-| 🔍 | Detects media URLs from page markup and network responses | 从页面结构和网络请求中自动检测媒体链接 |
-| 📦 | Supports MP4, WebM, MOV, M4V, MP3, M4A, AAC, OGG, WAV, FLAC | 支持主流视频和音频格式直链下载 |
-| 📡 | Downloads unencrypted HLS `.m3u8` streams via local FFmpeg | 通过本地 FFmpeg 下载未加密的 HLS 流并转为 MP4 |
-| 🔀 | Merges separate audio/video HLS renditions when available | 自动合并音视频分离的 HLS 流 |
-| 🖼️ | Extracts thumbnails from HLS streams | 提取 HLS 流的视频缩略图 |
-| 📊 | Shows format, resolution, duration, progress, and speed | 显示格式、分辨率、时长、下载进度和速度 |
-| 🚫 | Filters out fragments, placeholders, and unsupported sources | 自动过滤媒体碎片、占位文件和不支持的来源 |
-| 🔒 | Hides blob:, encrypted HLS, DASH, and DRM-protected URLs | 隐藏 blob 链接、加密 HLS、DASH 及 DRM 保护内容 |
+- Runs as a self-contained Chrome extension with no local helper, system FFmpeg, Node.js runtime, or separate setup required.
+- Restores public X video detection when the page exposes only a temporary `blob:` player URL.
+- Shows matching X thumbnails, readable post-derived titles, duration, resolution, and available MP4/HLS quality variants.
+- Keeps direct MP4/WebM files on Chrome's native download path and processes supported unencrypted HLS locally with packaged WebAssembly components.
+- Preserves user-started job progress after the toolbar popup closes.
+- Adds clean-profile Chrome tests covering detection, previews, downloads, MP4 validity, video, and audio.
 
----
+## Features
 
-## What It Can't Do · 不支持的内容
+- Opens as a normal Chrome toolbar popup for the active webpage.
+- Detects accessible direct MP4, WebM, audio, and media URLs.
+- Shows matching thumbnails, duration, format, resolution, source, and readable titles when available.
+- Recovers public X video quality variants when the page player exposes only a temporary `blob:` URL.
+- Downloads direct files through Chrome's native downloads API.
+- Processes supported unencrypted HLS/m3u8 streams into MP4 inside the packaged extension.
+- Keeps user-initiated job progress in local extension storage when the popup closes.
+- Requires no local helper, native application, account, analytics service, or VidPocket backend.
 
-VidPocket only works with media your browser can already access directly.
-VidPocket 只能下载浏览器本身就能直接访问的媒体资源。
+## Install
 
-**Not supported by design · 以下场景不在支持范围内：**
+### Chrome Web Store
 
-- DRM-protected streams（DRM 保护流）
-- Encrypted HLS playlists（加密 HLS）
-- YouTube and major protected platforms（YouTube 等平台保护内容）
-- Login-walled or paywalled media（需登录或付费的内容）
-- `blob:` URLs without an exposed media source（无实际来源的 blob 链接）
-- DASH `.mpd` workflows（DASH 协议）
+Install [VidPocket from the Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii). Pin it from Chrome's Extensions menu if the toolbar icon is hidden.
 
-> Only use VidPocket where you have the right to save the media.
-> 请仅在您有权限保存的内容上使用本工具。
+### Load From Source
 
----
+1. Download the current package from [GitHub Releases](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/latest) and extract it, or clone this repository.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select the extracted folder containing `manifest.json`, or select the repository root.
 
-## Requirements · 环境要求
+`npm ci` is required only for development, tests, and rebuilding the store package. It is not required to run the packaged extension.
 
-- Google Chrome or any Chromium-based browser（支持 Manifest V3）
-- macOS（helper 脚本目前仅支持 macOS）
-- Node.js 18+
-- FFmpeg & FFprobe（需在 PATH 中）
+## Use
 
-```bash
-# Install FFmpeg via Homebrew
-brew install ffmpeg
-```
+1. Open a webpage containing media you are allowed to save.
+2. Play the video first if the website loads it lazily.
+3. Click the VidPocket toolbar icon.
+4. Review the matching preview, duration, quality, format, and source.
+5. Click **Download** on the desired version.
 
----
+Direct files use Chrome's normal download system. Supported unencrypted HLS jobs run in the packaged offscreen extension document and produce MP4 output locally.
 
-## Installation · 安装
+## X Public Video Detection
 
-For a detailed setup guide, see [INSTALL.md](./INSTALL.md)（[中文安装说明](./INSTALL.zh-CN.md)）。
+Modern X pages often expose only a `blob:` player URL. VidPocket uses a packaged early-response hook and a bounded public-metadata fallback for visible public post IDs. The fallback requests X's public embed metadata directly from `cdn.syndication.twimg.com`, accepts media only from `video.twimg.com`, and accepts previews only from `pbs.twimg.com`.
 
-```text
-1. Open chrome://extensions
-2. Enable Developer mode（开启开发者模式）
-3. Click "Load unpacked"（加载已解压的扩展程序）
-4. Select the project folder（选择本项目文件夹）
-5. Run the helper installer（运行本地助手安装脚本）
-```
+Private, protected, login-restricted, encrypted, and DRM-protected media are not bypassed.
 
-```bash
-./helper/install-helper.command
-```
+## Limitations
 
-The local helper listens on `http://127.0.0.1:17384`.
-本地助手运行在 `http://127.0.0.1:17384`。
+VidPocket does not promise support for every website. It does not bypass DRM, encryption, paywalls, login restrictions, access controls, or platform protections. YouTube protected downloads are not supported. Availability depends on what the webpage and media host make directly accessible.
 
-```bash
-# Health check · 检查助手是否正常运行
-curl http://127.0.0.1:17384/health
-```
+Use VidPocket only for media you own or have permission to save.
 
----
+## Privacy
 
-## Usage · 使用方法
+VidPocket has no analytics, advertising SDK, account system, telemetry service, or hosted backend. Detection, previews, job state, and supported HLS processing remain local to the browser, except for normal requests sent directly to the source media host or X as described in [PRIVACY.md](PRIVACY.md).
 
-1. Open a webpage containing video（打开包含视频的网页）
-2. Play the video if it hasn't started loading（先播放一下，让页面加载媒体资源）
-3. Click the VidPocket extension icon（点击扩展图标）
-4. Review detected media entries（查看检测到的媒体列表）
-5. Click **Download**（点击下载）
+## Development
 
-For HLS sources, VidPocket sends the stream to the local helper, which converts it to MP4 via FFmpeg and hands the file to Chrome's downloads API.
-HLS 流会先由本地助手通过 FFmpeg 转换为 MP4，再交由 Chrome 完成下载。
+Requirements: Node.js 18 or newer.
 
----
-
-## Local Helper · 本地助手
-
-The helper is a lightweight local HTTP service that handles tasks Chrome extensions can't do alone.
-本地助手是一个轻量级 HTTP 服务，专门处理 Chrome 扩展无法独立完成的任务。
-
-**Responsibilities · 负责内容：**
-
-- Reading and parsing unencrypted HLS playlists（解析未加密 HLS 播放列表）
-- Extracting thumbnails（提取缩略图）
-- Merging audio/video renditions（合并音视频）
-- Converting HLS to MP4 via FFmpeg（转码为 MP4）
-- Reporting progress and speed to the popup UI（向弹窗实时上报进度和速度）
-
-On macOS, registered as a LaunchAgent:
-
-```text
-~/Library/LaunchAgents/com.vidpocket.helper.plist
-```
-
-Temporary files stored at:
-
-```text
-~/Library/Application Support/VidPocket
-```
-
----
-
-## Project Structure · 项目结构
-
-```text
-.
-├── helper/          # Local FFmpeg helper · 本地助手服务
-├── src/             # Extension scripts and popup · 扩展脚本和弹窗
-├── tests/           # Node-based regression tests · 回归测试
-├── test-assets/     # Small media fixtures · 测试媒体文件
-├── manifest.json    # Chrome extension manifest
-└── popup.html       # Extension popup
-```
-
----
-
-## Development · 开发
-
-```bash
-# Run all checks and tests · 运行语法检查和测试
+```sh
+npm ci
 npm test
-
-# Or run individually · 单独运行
-node --check src/background.js
-node --check src/content.js
-node --check src/popup.js
-node --check helper/vidpocket-helper.mjs
-
-node tests/background-unit.mjs
-node tests/popup-match-unit.mjs
-node tests/hls-unit.mjs
+npm run package:store
 ```
 
----
+Optional release QA:
 
-## Privacy · 隐私
+```sh
+npm run test:x-live
+VIDPOCKET_CHROME_BINARY="/path/to/Chrome for Testing" npm run test:chrome-live
+```
 
-VidPocket runs entirely on your machine. It inspects media URLs visible to the active browser tab and sends HLS work to the local helper on `127.0.0.1`. No analytics, no remote telemetry, no hosted backend.
+The Chrome Web Store archive is generated under `dist/` with `manifest.json` at the ZIP root.
 
-完全本地运行。检测范围仅限当前标签页可见的媒体链接，HLS 转码通过本地 `127.0.0.1` 完成。无数据上报，无远程服务。
+## Project Layout
 
----
+```text
+manifest.json          Chrome Manifest V3 configuration
+popup.html             Toolbar popup
+offscreen.html         Packaged HLS processing document
+src/background.js      Detection, X fallback, downloads, and job state
+src/content.js         Isolated webpage scanner
+src/x-media-hook.js    Packaged X page-response parser
+src/offscreen.js       HLS download, muxing, and thumbnail work
+src/popup.js           Popup rendering and controls
+vendor/                Packaged mux.js and FFmpeg WebAssembly files
+tests/                 Unit, media, live API, and clean-Chrome tests
+```
 
-## License · 许可证
+## License
 
-MIT License. See [LICENSE](./LICENSE).
-
----
-
-## Search Terms · 搜索关键词
-
-**English:** Chrome video downloader, webpage video downloader, web media detector, HLS downloader, m3u8 downloader, FFmpeg browser media helper
-
-**中文：** 网页视频下载、Chrome 视频下载插件、页面视频保存、m3u8 下载、HLS 下载、浏览器视频下载工具
+[MIT](LICENSE). Third-party components retain their respective licenses; see `vendor/THIRD_PARTY_NOTICES.txt`.

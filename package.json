@@ -1,12 +1,16 @@
 {
   "name": "vidpocket",
-  "version": "0.4.3",
+  "version": "0.5.1",
   "private": false,
-  "description": "A local-first Chrome webpage video downloader for directly accessible media resources and unencrypted HLS streams.",
+  "type": "module",
+  "description": "A local-first Chrome webpage video downloader for direct MP4/WebM files and unencrypted HLS streams.",
   "license": "MIT",
   "scripts": {
-    "check": "node --check src/background.js && node --check src/content.js && node --check src/popup.js && node --check helper/vidpocket-helper.mjs",
-    "test": "npm run check && node tests/background-unit.mjs && node tests/popup-match-unit.mjs && node tests/hls-unit.mjs"
+    "check": "node --check src/background.js && node --check src/content.js && node --check src/x-media-hook.js && node --check src/popup.js && node --check src/offscreen.js",
+    "test": "npm run check && node tests/toolbar-popup-unit.mjs && node tests/x-media-hook-unit.mjs && node tests/content-x-bridge-unit.mjs && node tests/x-syndication-unit.mjs && node tests/background-unit.mjs && node tests/download-job-unit.mjs && node tests/popup-match-unit.mjs && node tests/hls-browser-unit.mjs && node tests/ffmpeg-core-unit.mjs",
+    "test:chrome-live": "node tests/chrome-extension-e2e-live.mjs",
+    "test:x-live": "node tests/x-syndication-live.mjs",
+    "package:store": "node scripts/package-extension.mjs"
   },
   "keywords": [
     "vidpocket",
@@ -31,5 +35,10 @@
   ],
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "mux.js": "^6.3.0"
   }
 }

@@ -1,162 +1,193 @@
 # Chrome Web Store Listing Copy
 
-Use this file as the source text for the Chrome Web Store Developer Dashboard.
-
 ## Basic Information
 
-- Extension name: VidPocket
-- Chinese name: 视频口袋
-- Suggested category: Productivity
-- Primary language: English
-- Localized language: Chinese (Simplified)
-- Homepage URL: https://github.com/BryceYuuu/vidpocket-page-video-downloader
-- Support URL: https://github.com/BryceYuuu/vidpocket-page-video-downloader/issues
-- Privacy policy URL: https://github.com/BryceYuuu/vidpocket-page-video-downloader/blob/main/PRIVACY.md
+- Extension name: `VidPocket-网页视频下载`
+- Chinese name: `视频口袋`
+- Category: `Tools`
+- Homepage: https://github.com/BryceYuuu/vidpocket-page-video-downloader
+- Support: https://github.com/BryceYuuu/vidpocket-page-video-downloader/issues
+- Privacy policy: https://github.com/BryceYuuu/vidpocket-page-video-downloader/blob/main/PRIVACY.md
 
 ## English Short Description
 
-Detect and save directly accessible webpage videos, including unencrypted HLS streams with a local helper.
+Detect, preview, and download accessible webpage videos, direct MP4/WebM files, and unencrypted HLS streams.
 
 ## English Detailed Description
 
-VidPocket is a local-first webpage video downloader for Chrome. It helps you spot media resources exposed by the current page, review useful details, and save videos that your browser can already access.
+VidPocket-网页视频下载 is a local-first webpage video downloader and Chrome video downloader. Open the toolbar popup on the current page to detect accessible media, compare matching previews and quality details, and save the version you need.
 
-What VidPocket does:
+Key features:
 
-- Detects video and media resources from the active webpage.
-- Shows previews, duration, resolution, format, and source information when available.
-- Downloads directly accessible MP4/WebM/media files through Chrome.
-- Saves unencrypted HLS `.m3u8` streams as MP4 when the optional local helper is running.
-- Keeps processing local: no analytics, no hosted backend, no remote telemetry.
+- Detect accessible webpage video and media resources from the active tab.
+- Show matching preview thumbnails, duration, format, resolution, source, and useful titles when available.
+- Detect public X video renditions on supported posts, including direct MP4 quality options.
+- Download direct MP4, WebM, and other accessible media through Chrome's native download system.
+- Process supported unencrypted HLS/m3u8 streams locally into MP4 with packaged browser components.
+- Keep user-initiated download progress available after the short-lived toolbar popup closes.
+- Run without a local helper, native application, account, analytics, or hosted VidPocket backend.
 
-VidPocket is designed for normal webpage media workflows: collecting clips from pages you own, saving public media you are allowed to keep, or inspecting media resources during research and development.
+How to use:
 
-Important limitations:
+1. Open a webpage containing a video you are allowed to save.
+2. Play the video first if the website loads media only after playback begins.
+3. Click the VidPocket icon in Chrome's toolbar. If it is hidden, open it from Chrome's Extensions menu.
+4. Review the preview, duration, format, resolution, and source.
+5. Click Download on the desired version.
 
-- VidPocket does not bypass DRM, paywalls, login restrictions, access controls, or platform protections.
-- VidPocket does not claim support for YouTube protected video downloads.
-- HLS-to-MP4 conversion requires the optional local helper and FFmpeg.
-- Some websites intentionally hide, encrypt, split, or protect media streams; those resources may not be downloadable.
+Privacy and limitations:
 
-Use VidPocket only when you have the right to save the media.
+- Media detection and supported HLS processing are performed locally in the browser.
+- Public X post metadata may be requested directly from X when the page exposes only a temporary `blob:` player URL.
+- VidPocket does not bypass DRM, encryption, paywalls, login restrictions, access controls, or platform protections.
+- YouTube protected downloads are not supported.
+- Availability depends on what the webpage and media host make directly accessible.
+
+Use VidPocket only for media you own or have permission to save.
 
 ## English Feature Bullets
 
-- Webpage video detector
-- Direct media downloads
-- HLS `.m3u8` to MP4 with local FFmpeg helper
-- Preview thumbnails and media details
-- Local-first privacy model
-- Open-source project
-
-## English Permission Justifications
-
-Single purpose:
-
-VidPocket detects media resources exposed by the current webpage and lets the user download directly accessible videos or unencrypted HLS streams.
-
-`downloads`:
-
-Used to start Chrome downloads after the user clicks the Download button.
-
-`tabs`:
-
-Used to identify the active tab, request a page scan, and associate detected media with the current webpage.
-
-`webRequest`:
-
-Used to detect media resources exposed in webpage network responses, such as video files and HLS playlists.
-
-Host permissions `http://*/*` and `https://*/*`:
-
-Used to scan webpages the user visits for media resources. VidPocket does not upload this browsing data to a remote server.
-
-Remote code declaration:
-
-No. VidPocket does not execute remotely hosted code.
-
-Data usage statement:
-
-VidPocket processes active-page URLs, page titles, media URLs, media metadata, thumbnails, and download progress locally for the purpose of displaying and downloading media selected by the user. It does not sell, share, or transfer user data to advertising services or a hosted backend.
+- Webpage video detector and downloader
+- Real preview thumbnails and duration
+- Direct MP4/WebM downloads
+- Public X video quality detection
+- Local unencrypted HLS-to-MP4 processing
+- Local-first, no analytics or hosted backend
 
 ## 中文简短描述
 
-识别并保存网页中可直接访问的视频；未加密 HLS 可通过本地助手转为 MP4。
+网页视频下载工具：识别并预览当前页面视频，保存可访问的 MP4/WebM 和未加密 HLS 媒体。
 
 ## 中文详细描述
 
-VidPocket（视频口袋）是一个本地优先的 Chrome 网页视频下载工具。它可以帮助你识别当前网页中暴露的媒体资源，查看预览、时长、清晰度、格式和来源信息，并保存浏览器本身已经可以访问的视频。
+VidPocket-网页视频下载（视频口袋）是一款本地优先的 Chrome 网页视频下载插件。点击浏览器右上角图标，即可在当前页面检测可访问媒体，通过真实预览图、时长和清晰度区分视频，并保存需要的版本。
 
-VidPocket 可以做什么：
+主要功能：
 
-- 识别当前网页中的视频和媒体资源。
-- 在可获取时显示预览图、时长、分辨率、格式和来源。
-- 通过 Chrome 下载可直接访问的 MP4、WebM 或其他媒体文件。
-- 在本地助手运行时，把未加密 HLS `.m3u8` 流保存为 MP4。
-- 本地优先处理：没有统计分析、没有托管后端、没有远程遥测。
+- 识别当前标签页中可访问的网页视频和媒体资源。
+- 在可获取时显示匹配的预览图、时长、格式、分辨率、来源和易读标题。
+- 在支持的 X 公开帖子中识别视频，并提供多个直接 MP4 清晰度选项。
+- 通过 Chrome 原生下载系统保存可直接访问的 MP4、WebM 和其他媒体文件。
+- 使用安装包内的浏览器组件，在本地把受支持的未加密 HLS/m3u8 处理为 MP4。
+- 用户发起下载后，即使短暂的工具栏弹窗关闭，也能保留任务状态和进度。
+- 不需要本地助手、原生应用或账户，不包含分析统计，也没有 VidPocket 托管后端。
 
-VidPocket 适合普通网页媒体场景：保存你自己网页中的素材、保存你有权保存的公开视频，或在研发、调试、研究时检查页面媒体资源。
+使用方法：
 
-重要限制：
+1. 打开包含你有权保存视频的网页。
+2. 如果网站需要播放后才加载媒体，请先播放视频。
+3. 点击 Chrome 右上角的 VidPocket 图标；如果图标被隐藏，可从“扩展程序”菜单打开。
+4. 查看预览图、时长、格式、清晰度和来源。
+5. 对需要的版本点击“下载”。
 
-- VidPocket 不绕过 DRM、付费墙、登录限制、访问控制或平台保护。
-- VidPocket 不宣称支持下载 YouTube 受保护视频。
-- HLS 转 MP4 需要可选本地助手和 FFmpeg。
-- 有些网站会隐藏、加密、拆分或保护媒体流，这些资源可能无法下载。
+隐私与限制：
 
-请只在你拥有保存权限的情况下使用 VidPocket。
+- 媒体识别和受支持的 HLS 处理在浏览器本地完成。
+- 当 X 页面只暴露临时 `blob:` 播放地址时，扩展可能直接向 X 请求公开帖子媒体元数据。
+- VidPocket 不绕过 DRM、加密、付费墙、登录限制、访问控制或平台保护。
+- 不支持下载 YouTube 受保护视频。
+- 能否下载取决于网页和媒体来源是否提供可直接访问的资源。
+
+请只下载你拥有或获准保存的媒体。
 
 ## 中文功能要点
 
-- 网页视频识别
-- 直接媒体下载
-- HLS `.m3u8` 本地转 MP4
-- 预览图和媒体详情
-- 本地优先隐私模式
-- 开源项目
+- 网页视频识别和下载
+- 真实预览图与视频时长
+- 直接 MP4/WebM 下载
+- X 公开视频多清晰度识别
+- 未加密 HLS 本地转 MP4
+- 本地优先，无统计分析和托管后端
+
+## Permission Justifications
+
+### Single purpose
+
+VidPocket detects media resources exposed by the active webpage and lets the user preview and save directly accessible video files or supported unencrypted HLS streams.
+
+### `downloads`
+
+Used only after the user clicks Download to save the selected media through Chrome and monitor that download's progress. VidPocket does not start downloads automatically.
+
+### `tabs`
+
+Used to identify the active tab, request a scan of that page, and associate detected media and download jobs with the correct tab.
+
+### `scripting`
+
+Used after the user opens VidPocket to inject or wake the packaged media scanner on the active webpage, including pages already open before installation. On X pages it can also start the packaged X response hook. VidPocket does not inject third-party or remotely hosted code.
+
+### `webRequest`
+
+Used to detect media resources exposed in webpage network responses, including direct video files and HLS playlists that may not appear as normal page links.
+
+### `offscreen`
+
+Used to run packaged, user-initiated unencrypted HLS downloading, MP4 generation, and thumbnail extraction outside the short-lived toolbar popup. It does not display ads or run unrelated background activity.
+
+### `storage`
+
+Used to keep local download job state, progress, filenames, and byte counts so a user-initiated task can continue after the toolbar popup closes. This data is not uploaded to VidPocket.
+
+### Host permissions `http://*/*` and `https://*/*`
+
+Used to scan webpages the user visits and retrieve media the user selects. On public X posts, VidPocket may request public media metadata directly from X. Browsing data and media are not uploaded to a VidPocket server.
+
+### Remote code declaration
+
+No. VidPocket does not execute remote code. All JavaScript, WebAssembly, mux.js, and FFmpeg components are included in the submitted package. Remote JSON, playlists, images, and media are processed only as data.
 
 ## 中文权限说明
 
-单一用途：
+### 单一用途
 
-VidPocket 用来识别当前网页中暴露的媒体资源，并让用户下载可直接访问的视频或未加密 HLS 流。
+VidPocket 用于识别当前网页中暴露的媒体资源，让用户预览并保存可直接访问的视频文件或受支持的未加密 HLS 流。
 
-`downloads`：
+### `downloads`
 
-用户点击“下载”后，用于启动 Chrome 下载任务。
+仅在用户点击“下载”后，通过 Chrome 保存所选媒体并跟踪对应下载进度。VidPocket 不会自动开始下载。
 
-`tabs`：
+### `tabs`
 
-用于识别当前标签页、请求页面扫描，并把检测到的媒体资源与当前网页关联。
+用于识别当前标签页、请求扫描，并把检测到的媒体和下载任务关联到正确标签页。
 
-`webRequest`：
+### `scripting`
 
-用于识别网页网络响应中暴露的视频文件、HLS 播放列表等媒体资源。
+用户打开 VidPocket 后，用于在当前网页注入或唤醒安装包内的媒体检测脚本，包括安装前已经打开的网页。在 X 页面中也可启动安装包内的 X 响应检测脚本。VidPocket 不注入第三方或远程托管代码。
 
-主机权限 `http://*/*` 和 `https://*/*`：
+### `webRequest`
 
-用于在用户访问的网页中扫描媒体资源。VidPocket 不会把浏览数据上传到远程服务器。
+用于识别网页网络响应中暴露的媒体资源，包括没有作为普通链接出现的直接视频文件和 HLS 播放列表。
 
-远程代码声明：
+### `offscreen`
 
-否。VidPocket 不执行远程托管代码。
+用于在短暂的工具栏弹窗之外执行安装包内、由用户主动发起的未加密 HLS 下载、MP4 生成和预览图提取，不显示广告，也不执行无关后台活动。
 
-数据使用声明：
+### `storage`
 
-VidPocket 会在本地处理当前页面 URL、页面标题、媒体 URL、媒体元数据、预览图和下载进度，用于展示和下载用户选择的媒体。它不会出售、共享用户数据，也不会把数据传给广告服务或托管后端。
+用于在本地保存下载任务状态、进度、文件名和字节数，使用户发起的任务在工具栏弹窗关闭后仍可继续。这些数据不会上传给 VidPocket。
 
-## Search Keywords To Use Naturally
+### 主机权限 `http://*/*` 和 `https://*/*`
 
-Do not paste keyword blocks into the public listing as spam. Work these phrases naturally into the description, README, GitHub topics, and support docs:
+用于扫描用户访问的网页，并获取用户选择的媒体。在 X 公开帖子中，VidPocket 可能直接向 X 请求公开媒体元数据。浏览数据和媒体不会上传到 VidPocket 服务器。
+
+### 远程代码声明
+
+否。VidPocket 不执行远程代码。所有 JavaScript、WebAssembly、mux.js 和 FFmpeg 组件都包含在提交包中。远程 JSON、播放列表、图片和媒体只作为数据处理。
+
+## Search Phrases
+
+Use these naturally in descriptions and support content rather than as a repeated keyword block:
 
 - webpage video downloader
 - Chrome video downloader
-- HLS downloader
+- download webpage video
+- MP4 downloader
 - m3u8 downloader
-- media detector
-- save webpage video
+- HLS downloader
+- X video downloader
 - 网页视频下载
 - 页面视频下载
-- HLS 下载
-- m3u8 下载
 - 视频下载插件
+- Chrome 视频下载
+- m3u8 下载

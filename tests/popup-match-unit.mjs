@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const stubs = new Map();
+const runtimeMessages = [];
 function element() {
   return {
     textContent: "",
@@ -37,9 +38,18 @@ const context = {
     },
     addEventListener() {}
   },
+  window: {
+    addEventListener() {}
+  },
   chrome: {
     tabs: { query() {}, sendMessage() {} },
-    runtime: { sendMessage() {}, lastError: null },
+    runtime: {
+      sendMessage(message, callback) {
+        runtimeMessages.push(message);
+        callback({ ok: true, requested: 1, found: 6 });
+      },
+      lastError: null
+    },
     downloads: { download(_options, callback) { callback(1); } }
   },
   navigator: {
@@ -53,19 +63,39 @@ vm.runInContext(readFileSync("src/popup.js", "utf8"), context, {
   filename: "src/popup.js"
 });
 
-context.__vidPocketPopupTest.thumbnailCache.set("https://video.twimg.com/one.m3u8", {
-  status: "done",
-  thumbnail: "data:image/jpeg;base64,REALHLS",
-  duration: 15,
-  width: 1280,
-  height: 720
+const api = context.__VIDPOCKET_POPUP_TEST_API__;
+assert(
+  api.xTweetIdFromUrl("https://x.com/MiniMax_AI/status/2084106804032872591") === "2084106804032872591",
+  "the popup should extract the exact X status id"
+);
+assert(
+  api.xTweetIdFromUrl("https://example.com/status/2084106804032872591") === "",
+  "non-X status URLs must not trigger the X fallback"
+);
+await api.requestActiveXStatusScan({
+  id: 17,
+  url: "https://x.com/MiniMax_AI/status/2084106804032872591",
+  title: "MiniMax (official) on X"
 });
-context.__vidPocketPopupTest.thumbnailCache.set("https://video.twimg.com/failed.m3u8", {
-  status: "failed",
-  error: "403 Forbidden"
-});
+const directScan = runtimeMessages.find((message) => message && message.type === "scanXTweets");
+assert(Array.from(directScan.tweetIds).join(",") === "2084106804032872591", "the direct scan should send the exact tweet id");
+assert(directScan.tabId === 17, "the direct scan should stay associated with the active tab");
+api.thumbnailCache.set("https://video.twimg.com/one.m3u8", "data:image/jpeg;base64,REALHLS");
 
-const displayItems = context.__vidPocketPopupTest.prepareDisplayItems([
+const displayItems = api.prepareDisplayItems([
+  {
+    id: "mp4-1",
+    url: "https://cdn.example.com/course/video.mp4",
+    kind: "video",
+    quality: "1080p",
+    duration: 42,
+    width: 1920,
+    height: 1080,
+    thumbnail: "data:image/jpeg;base64,MP4FRAME",
+    label: "course video.mp4",
+    downloadable: true,
+    probeStatus: "done"
+  },
   {
     id: "blob-1",
     url: "blob:https://x.com/1",
@@ -116,35 +146,58 @@ const displayItems = context.__vidPocketPopupTest.prepareDisplayItems([
     url: "https://media.test/video.mpd",
     kind: "dash",
     label: "video.mpd"
+  },
+  {
+    id: "x-duplicate-a",
+    url: "https://video.twimg.com/amplify_video/123456/vid/avc1/1280x720/random-a.mp4?tag=12",
+    kind: "video",
+    quality: "720p",
+    duration: 18,
+    width: 1280,
+    height: 720,
+    thumbnail: "https://pbs.twimg.com/amplify_video_thumb/123456/img/preview.jpg",
+    label: "random-a.mp4",
+    downloadable: true,
+    probeStatus: "done"
+  },
+  {
+    id: "x-duplicate-b",
+    url: "https://video.twimg.com/amplify_video/123456/vid/avc1/1280x720/random-b.mp4",
+    kind: "video",
+    quality: "720p",
+    duration: 18,
+    width: 1280,
+    height: 720,
+    thumbnail: "https://pbs.twimg.com/amplify_video_thumb/123456/img/preview.jpg",
+    label: "Product launch demo",
+    downloadable: true,
+    probeStatus: "done"
   }
 ]);
 
 const firstHls = displayItems.find((item) => item.id === "hls-1");
 const secondHls = displayItems.find((item) => item.id === "hls-2");
 const failedHls = displayItems.find((item) => item.id === "hls-3");
+const directMp4 = displayItems.find((item) => item.id === "mp4-1");
 
+assert(directMp4, "Direct MP4 rows should be shown");
+assert(directMp4.downloadable === true, "Direct MP4 rows should remain downloadable");
 assert(!displayItems.some((item) => item.kind === "blob"), "BLOB rows should not be shown as download rows");
 assert(!displayItems.some((item) => item.kind === "dash"), "DASH rows should stay hidden because this build does not download DASH");
-assert(firstHls.thumbnail === "data:image/jpeg;base64,REALHLS", "HLS row should use only its helper-generated thumbnail");
-assert(firstHls.duration === 15, "HLS row should absorb helper duration");
-assert(firstHls.quality === "720p", "HLS row should infer quality from helper metadata");
-assert(!secondHls.thumbnail, "Uncached HLS should not borrow unrelated page thumbnails");
-assert(failedHls.previewStatus === "failed", "Failed HLS preview should be explicit");
-assert(failedHls.previewError === "403 Forbidden", "Failed HLS preview should keep the helper error");
-assert(context.__vidPocketPopupTest.displayName(secondHls).startsWith("X视频"), "Random HLS names should become readable source titles");
-assert(!/two/i.test(context.__vidPocketPopupTest.downloadBaseName(secondHls)), "Download filename should not use random m3u8 token");
-assert(/^data:image\/svg\+xml/.test(context.__vidPocketPopupTest.infoPlaceholder(secondHls)), "Missing previews should use an information placeholder image");
+assert(firstHls && secondHls && failedHls, "HLS rows should be shown as extension-local download rows");
+assert(firstHls.thumbnail.includes("REALHLS"), "A generated HLS thumbnail should stay attached to its own URL");
+assert(displayItems.filter((item) => item.url.includes("/amplify_video/123456/")).length === 1, "matching X renditions should not be displayed twice");
 
 console.log(JSON.stringify({
   ok: true,
   assertions: [
+    "Direct MP4 is shown and remains downloadable",
     "BLOB is hidden instead of exposed as a fake download",
     "DASH is hidden because it is not supported",
-    "HLS uses helper-generated preview only",
-    "Uncached HLS does not borrow unrelated thumbnails",
-    "Preview failure is explicit",
-    "Random HLS names are replaced with readable titles",
-    "Missing preview uses an information placeholder"
+    "HLS is shown without requiring a local helper",
+    "Generated HLS thumbnails remain URL-specific",
+    "opening an exact X status triggers a background media scan independent of page DOM",
+    "the same X asset and resolution is deduplicated across page and background discovery"
   ]
 }, null, 2));
 
