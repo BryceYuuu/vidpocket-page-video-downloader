@@ -29,7 +29,7 @@ body:
         - Detection
         - HLS handling
         - Popup UI
-        - Helper installation
+        - Packaging
         - Documentation
         - Tests
   - type: textarea
