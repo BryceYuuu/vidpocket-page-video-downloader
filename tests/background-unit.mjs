@@ -117,6 +117,29 @@ context.addCandidate(1, {
   thumbnail: "https://pbs.twimg.com/ext_tw_video_thumb/1527322141724532740/pu/img/example.jpg"
 });
 
+context.addCandidate(1, {
+  url: "https://scontent-lax3-2.cdninstagram.com/o1/v/t16/f2/m84/clip.mp4?_nc_cat=1&bytestart=0&byteend=524287",
+  kind: "video",
+  source: "network",
+  contentType: "video/mp4",
+  contentLength: 524288,
+  width: 1280,
+  height: 720,
+  force: true
+});
+context.addCandidate(1, {
+  url: "https://scontent-lax3-2.cdninstagram.com/o1/v/t16/f2/m84/clip.mp4?_nc_cat=1",
+  kind: "video",
+  source: "page-api",
+  contentType: "video/mp4",
+  duration: 15,
+  width: 1280,
+  height: 720,
+  quality: "720p",
+  mediaId: "4007130374095024395",
+  force: true
+});
+
 await delay(50);
 
 const items = context.getCandidates(1);
@@ -136,6 +159,9 @@ assert(xMp4, "X direct MP4 variant should be detected");
 assert(xMp4.downloadable === true, "X direct MP4 variant should be immediately downloadable");
 assert(xMp4.thumbnail.includes("pbs.twimg.com"), "X direct MP4 should retain its matching thumbnail");
 assert(xMp4.duration === 136.5, "X direct MP4 should retain its duration");
+assert(!items.some((item) => item.url.includes("bytestart=")), "DASH byte-range slices should never be listed, even with playback metadata");
+const threadsMp4 = items.find((item) => item.url.includes("cdninstagram.com") && !item.url.includes("bytestart="));
+assert(threadsMp4 && threadsMp4.downloadable === true, "Threads progressive MP4 should be downloadable");
 
 console.log(JSON.stringify({
   ok: true,

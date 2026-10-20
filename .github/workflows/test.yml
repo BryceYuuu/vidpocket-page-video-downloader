@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install --yes ffmpeg
 
       - name: Run tests
-        run: npm test
+        run: npm run test:all
 
       - name: Build Chrome Web Store package
         run: npm run package:store

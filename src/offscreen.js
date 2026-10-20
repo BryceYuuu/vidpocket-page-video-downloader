@@ -97,8 +97,7 @@ async function runHlsDownload(job, signal) {
 
   const meter = createTransferMeter(jobId, totalUnits);
   reportJob(jobId, { status: "downloading", progress: 0.03, message: "下载分片" });
-  const video = await downloadMediaPlaylist(plan.video, signal, meter);
-  const audio = plan.audio ? await downloadMediaPlaylist(plan.audio, signal, meter) : null;
+  const [video, audio] = await downloadTracksTogether(plan, signal, meter);
   throwIfAborted(signal);
 
   reportJob(jobId, {
@@ -372,6 +371,29 @@ function parseMediaPlaylist(text, playlistUrl) {
     keys,
     duration: segments.reduce((sum, segment) => sum + segment.duration, 0)
   };
+}
+
+// Separate audio renditions download alongside the video instead of after it;
+// if either track fails, the other is cancelled so it stops using bandwidth.
+async function downloadTracksTogether(plan, signal, meter) {
+  if (!plan.audio) {
+    return [await downloadMediaPlaylist(plan.video, signal, meter), null];
+  }
+  const tracks = new AbortController();
+  const abortTracks = () => tracks.abort(signal.reason);
+  if (signal.aborted) abortTracks();
+  else signal.addEventListener("abort", abortTracks, { once: true });
+  try {
+    return await Promise.all([
+      downloadMediaPlaylist(plan.video, tracks.signal, meter),
+      downloadMediaPlaylist(plan.audio, tracks.signal, meter)
+    ]);
+  } catch (error) {
+    tracks.abort(error);
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", abortTracks);
+  }
 }
 
 async function downloadMediaPlaylist(playlist, signal, meter) {
@@ -830,6 +852,7 @@ if (globalThis.__VIDPOCKET_TEST_MODE__) {
     chooseVariant,
     detectContainer,
     concatenateParts,
-    transmuxTransportStream
+    transmuxTransportStream,
+    downloadTracksTogether
   };
 }

@@ -29,10 +29,10 @@ npm test
 
 ```sh
 npm run package:store
-unzip -t dist/vidpocket-0.5.1.zip
+unzip -t dist/vidpocket-0.5.2.zip
 ```
 
-上传 `dist/vidpocket-0.5.1.zip`。不要再次压缩外层目录，`manifest.json` 必须位于 ZIP 根目录。
+上传 `dist/vidpocket-0.5.2.zip`。不要再次压缩外层目录，`manifest.json` 必须位于 ZIP 根目录。
 
 ## 常见问题
 
@@ -52,6 +52,12 @@ unzip -t dist/vidpocket-0.5.1.zip
 - 打开单独的公开 `/status/...` 页面，并点击“刷新”。
 - 确认帖子仍然公开且可访问。
 - 公开元数据兜底不会访问私密或受保护帖子。
+
+### Threads 视频没有识别
+
+- 安装或更新 VidPocket 后请刷新 Threads 页面，再打开弹窗。
+- 打开单独的 `/post/...` 页面，并点击“刷新”。
+- 私密帖子或你在浏览器中看不到的帖子无法访问。
 
 ### HLS 任务失败
 

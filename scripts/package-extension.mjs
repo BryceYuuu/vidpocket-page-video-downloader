@@ -18,6 +18,7 @@ const packageFiles = [
   "src/background.js",
   "src/content.js",
   "src/x-media-hook.js",
+  "src/threads-media-hook.js",
   "src/popup.css",
   "src/popup.js",
   "src/offscreen.js",

@@ -20,7 +20,7 @@ const thumbnailCache = new Map();
 document.addEventListener("DOMContentLoaded", init);
 refreshButton.addEventListener("click", refresh);
 clearButton.addEventListener("click", clearCurrentTab);
-window.addEventListener("unload", () => clearTimeout(jobPollTimer));
+window.addEventListener("pagehide", () => clearTimeout(jobPollTimer));
 
 async function init() {
   activeTab = await resolveTargetTab();
@@ -29,6 +29,8 @@ async function init() {
     render([]);
     return;
   }
+  // Show what the background already knows (cached across worker restarts) before rescanning.
+  await loadState(0, { poll: false }).catch(() => {});
   await refresh();
   scheduleJobPoll(200);
 }
@@ -54,12 +56,15 @@ function targetTabIdFromUrl() {
 
 async function refresh() {
   if (!activeTab) return;
-  setStatus("正在扫描当前页面");
+  if (!currentItems.length) setStatus("正在扫描当前页面");
   const directXScan = requestActiveXStatusScan(activeTab).catch(() => null);
   await ensureContentScanner(activeTab);
   await directXScan;
-  await delay(350);
+  // The scan reply arrives after the content script has already sent its candidates; a short
+  // pause covers background bookkeeping, and a follow-up picks up page-hook results that land later.
+  await delay(120);
   await loadState(0);
+  setTimeout(() => reloadCandidatesOnly().catch(() => {}), 900);
 }
 
 async function requestActiveXStatusScan(tab) {
@@ -84,16 +89,22 @@ async function ensureContentScanner(tab) {
   if (isXTab(tab)) {
     await executeXPageHook(tab.id).catch(() => null);
   }
+  if (isThreadsTab(tab)) {
+    await executeThreadsPageHook(tab.id).catch(() => null);
+  }
   const ping = await sendTabMessage(tab.id, { type: "scanNow" }).catch(() => null);
   if (ping && ping.ok) return;
   await executeContentScript(tab.id).catch(() => null);
   if (isXTab(tab)) {
     await executeXPageHook(tab.id).catch(() => null);
   }
+  if (isThreadsTab(tab)) {
+    await executeThreadsPageHook(tab.id).catch(() => null);
+  }
   await sendTabMessage(tab.id, { type: "scanNow" }).catch(() => null);
 }
 
-async function loadState(pollCount = 0) {
+async function loadState(pollCount = 0, options = {}) {
   if (!activeTab) return;
   const [candidateResponse, jobResponse] = await Promise.all([
     sendRuntimeMessage({ type: "getCandidates", tabId: activeTab.id }).catch(() => ({ ok: false })),
@@ -107,6 +118,7 @@ async function loadState(pollCount = 0) {
   currentItems = prepareDisplayItems(rawItems);
   render(currentItems);
   updateHeaderStatus(rawItems);
+  if (options.poll === false) return;
 
   if (!currentItems.length && pollCount < 12 && (!currentXScan || currentXScan.status === "loading")) {
     setStatus(isXTab(activeTab) ? "正在解析 X 页面视频" : "正在等待页面媒体资源");
@@ -150,112 +162,186 @@ async function clearCurrentTab() {
   setStatus("已清空识别记录");
 }
 
+// Rows are keyed by item id and reused across renders. Job polling re-renders every
+// ~0.6s; rebuilding the DOM each time reloaded every cover and video preview.
+const rowsById = new Map();
+// The first rows fill the visible popup, so they load at once; later rows wait until scrolled near.
+const EAGER_PREVIEW_ROWS = 4;
+const previewObserver = typeof IntersectionObserver === "function"
+  ? new IntersectionObserver(handlePreviewVisibility, { rootMargin: "240px 0px" })
+  : null;
+
 function render(items) {
-  itemsEl.textContent = "";
   emptyEl.hidden = items.length > 0;
+  const liveIds = new Set(items.map((item) => item.id));
+  rowsById.forEach((row, id) => {
+    if (!liveIds.has(id)) {
+      if (previewObserver) previewObserver.unobserve(row.refs.thumbEl);
+      row.node.remove();
+      rowsById.delete(id);
+    }
+  });
 
   items.forEach((item, index) => {
-    const node = template.content.firstElementChild.cloneNode(true);
-    const removeButton = node.querySelector(".remove");
-    const thumbEl = node.querySelector(".thumb");
-    const thumbVideo = node.querySelector(".thumb-video");
-    const thumbImg = node.querySelector(".thumb-img");
-    const durationEl = node.querySelector(".duration");
-    const kindEl = node.querySelector(".kind");
-    const sourceEl = node.querySelector(".source");
-    const formatEl = node.querySelector(".format");
-    const qualityEl = node.querySelector(".quality");
-    const nameEl = node.querySelector(".name");
-    const detailsEl = node.querySelector(".details");
-    const fallbackEl = node.querySelector(".thumb-fallback");
-    const progressEl = node.querySelector(".progress");
-    const progressFillEl = node.querySelector(".progress-fill");
-    const progressTextEl = node.querySelector(".progress-text");
-    const progressSpeedEl = node.querySelector(".progress-speed");
-    const stopButton = node.querySelector(".stop");
-    const copyButton = node.querySelector(".copy");
-    const downloadButton = node.querySelector(".download");
-    const job = jobForItem(item);
-
-    renderPreview(item, {
-      thumbEl,
-      thumbVideo,
-      thumbImg,
-      fallbackEl,
-      durationEl
-    });
-    durationEl.textContent = formatDuration(item.duration);
-    kindEl.textContent = badgeLabel(item);
-    kindEl.classList.add(item.kind || "media");
-    nameEl.textContent = displayName(item);
-    nameEl.title = item.url;
-    formatEl.textContent = item.kind === "hls" ? "MP4" : (item.format || formatFromUrl(item.url));
-    qualityEl.textContent = item.quality || "";
-    qualityEl.hidden = !item.quality;
-    qualityEl.classList.toggle("high", isHighQuality(item.quality));
-    sourceEl.textContent = sourceLabel(item.source);
-    detailsEl.textContent = detailLine(item, job);
-    detailsEl.title = item.url;
-
-    removeButton.addEventListener("click", async () => {
-      await sendRuntimeMessage({ type: "removeCandidate", tabId: activeTab.id, id: item.id });
-      currentItems = currentItems.filter((candidate) => candidate.id !== item.id);
-      render(currentItems);
-      updateHeaderStatus(currentItems);
-    });
-    copyButton.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(item.url);
-      setStatus("已复制媒体链接");
-    });
-
-    configureDownloadControls(item, job, {
-      downloadButton,
-      stopButton,
-      progressEl,
-      progressFillEl,
-      progressTextEl,
-      progressSpeedEl
-    });
-
-    itemsEl.appendChild(node);
+    const row = rowsById.get(item.id) || createRow(item);
+    row.item = item;
+    updateRow(row, item, jobForItem(item), index < EAGER_PREVIEW_ROWS);
+    const current = itemsEl.children[index];
+    if (current !== row.node) itemsEl.insertBefore(row.node, current || null);
     if (item.kind === "hls" && !item.thumbnail && item.previewStatus !== "failed" && index < 12) {
       queueThumbnail(item);
     }
   });
 }
 
-function renderPreview(item, controls) {
-  const { thumbEl, thumbVideo, thumbImg, fallbackEl, durationEl } = controls;
+function createRow(item) {
+  const node = template.content.firstElementChild.cloneNode(true);
+  const refs = {
+    thumbEl: node.querySelector(".thumb"),
+    thumbVideo: node.querySelector(".thumb-video"),
+    thumbImg: node.querySelector(".thumb-img"),
+    durationEl: node.querySelector(".duration"),
+    kindEl: node.querySelector(".kind"),
+    sourceEl: node.querySelector(".source"),
+    formatEl: node.querySelector(".format"),
+    qualityEl: node.querySelector(".quality"),
+    nameEl: node.querySelector(".name"),
+    detailsEl: node.querySelector(".details"),
+    fallbackEl: node.querySelector(".thumb-fallback"),
+    progressEl: node.querySelector(".progress"),
+    progressFillEl: node.querySelector(".progress-fill"),
+    progressTextEl: node.querySelector(".progress-text"),
+    progressSpeedEl: node.querySelector(".progress-speed"),
+    stopButton: node.querySelector(".stop"),
+    copyButton: node.querySelector(".copy"),
+    downloadButton: node.querySelector(".download"),
+    removeButton: node.querySelector(".remove")
+  };
+  const row = { node, refs, item, previewKey: null };
+
+  refs.removeButton.addEventListener("click", async () => {
+    await sendRuntimeMessage({ type: "removeCandidate", tabId: activeTab.id, id: row.item.id });
+    currentItems = currentItems.filter((candidate) => candidate.id !== row.item.id);
+    render(currentItems);
+    updateHeaderStatus(currentItems);
+  });
+  refs.copyButton.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(row.item.url);
+    setStatus("已复制媒体链接");
+  });
+  refs.thumbVideo.addEventListener("loadedmetadata", () => {
+    if (!refs.durationEl.textContent) refs.durationEl.textContent = formatDuration(refs.thumbVideo.duration);
+  });
+  refs.thumbEl.addEventListener("mouseenter", () => {
+    if (refs.thumbVideo.getAttribute("src")) refs.thumbVideo.play().catch(() => {});
+  });
+  refs.thumbEl.addEventListener("mouseleave", () => {
+    refs.thumbVideo.pause();
+    try { refs.thumbVideo.currentTime = 0; } catch {}
+  });
+  refs.thumbImg.addEventListener("error", () => refs.thumbImg.removeAttribute("src"));
+
+  rowsById.set(item.id, row);
+  return row;
+}
+
+function updateRow(row, item, job, eagerPreview) {
+  const { refs } = row;
+  // Only touch the preview when its source changes, so covers are not reloaded on every poll.
+  const previewKey = `${item.thumbnail || ""}|${canPreviewVideo(item) ? item.url : ""}|${item.previewStatus || ""}`;
+  if (previewKey !== row.previewKey) {
+    row.previewKey = previewKey;
+    renderPreview(item, refs, eagerPreview);
+  }
+  setText(refs.durationEl, formatDuration(item.duration) || refs.durationEl.textContent);
+  setText(refs.kindEl, badgeLabel(item));
+  refs.kindEl.className = `pill kind ${item.kind || "media"}`;
+  setText(refs.nameEl, displayName(item));
+  refs.nameEl.title = item.url;
+  setText(refs.formatEl, item.kind === "hls" ? "MP4" : (item.format || formatFromUrl(item.url)));
+  setText(refs.qualityEl, item.quality || "");
+  refs.qualityEl.hidden = !item.quality;
+  refs.qualityEl.classList.toggle("high", isHighQuality(item.quality));
+  setText(refs.sourceEl, sourceLabel(item.source));
+  setText(refs.detailsEl, detailLine(item, job));
+  refs.detailsEl.title = item.url;
+  configureDownloadControls(row, item, job);
+}
+
+function setText(element, value) {
+  const text = String(value || "");
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function renderPreview(item, refs, eager) {
+  const { thumbEl, thumbVideo, thumbImg, fallbackEl } = refs;
   const staticThumbnail = item.thumbnail || (!canPreviewVideo(item) ? infoPlaceholder(item) : "");
-  if (staticThumbnail) {
-    thumbImg.src = staticThumbnail;
-    thumbEl.classList.add("has-preview");
+  const videoSrc = canPreviewVideo(item) && !item.thumbnail ? item.url : "";
+  thumbEl.classList.toggle("has-preview", Boolean(staticThumbnail || videoSrc));
+  thumbVideo.title = videoSrc;
+  fallbackEl.textContent = item.previewStatus === "pending" ? "预览中" : "VIDEO";
+  // Remote previews load only when the row is near the visible area of the popup.
+  thumbEl.vidpocketPreview = { img: staticThumbnail ? previewImageUrl(staticThumbnail) : "", video: videoSrc };
+  const isInline = !staticThumbnail || /^data:/i.test(staticThumbnail);
+  if (previewObserver && !eager && (!isInline || videoSrc)) {
+    if (!staticThumbnail) thumbImg.removeAttribute("src");
+    if (!videoSrc) thumbVideo.removeAttribute("src");
+    previewObserver.unobserve(thumbEl);
+    previewObserver.observe(thumbEl);
+  } else {
+    if (previewObserver) previewObserver.unobserve(thumbEl);
+    applyPreview(thumbEl, thumbImg, thumbVideo);
+  }
+}
+
+function handlePreviewVisibility(entries) {
+  entries.forEach((entry) => {
+    if (!entry.isIntersecting) return;
+    const thumbEl = entry.target;
+    previewObserver.unobserve(thumbEl);
+    applyPreview(thumbEl, thumbEl.querySelector(".thumb-img"), thumbEl.querySelector(".thumb-video"));
+  });
+}
+
+function applyPreview(thumbEl, thumbImg, thumbVideo) {
+  const preview = thumbEl.vidpocketPreview || { img: "", video: "" };
+  if (preview.img) {
+    if (thumbImg.getAttribute("src") !== preview.img) thumbImg.src = preview.img;
   } else {
     thumbImg.removeAttribute("src");
   }
-
-  if (canPreviewVideo(item) && !item.thumbnail) {
-    thumbVideo.src = item.url;
-    thumbVideo.title = item.url;
-    thumbEl.classList.add("has-preview");
-    thumbVideo.addEventListener("loadedmetadata", () => {
-      if (!durationEl.textContent) durationEl.textContent = formatDuration(thumbVideo.duration);
-    });
-    thumbEl.addEventListener("mouseenter", () => thumbVideo.play().catch(() => {}));
-    thumbEl.addEventListener("mouseleave", () => {
-      thumbVideo.pause();
-      try { thumbVideo.currentTime = 0; } catch {}
-    });
-  } else {
+  if (preview.video) {
+    if (thumbVideo.getAttribute("src") !== preview.video) thumbVideo.src = preview.video;
+  } else if (thumbVideo.getAttribute("src")) {
     thumbVideo.removeAttribute("src");
+    thumbVideo.load();
   }
-  fallbackEl.textContent = item.previewStatus === "pending" ? "预览中" : "VIDEO";
-  thumbImg.addEventListener("error", () => thumbImg.removeAttribute("src"));
 }
 
-function configureDownloadControls(item, job, controls) {
-  const { downloadButton, stopButton, progressEl, progressFillEl, progressTextEl, progressSpeedEl } = controls;
+// X serves the original cover (often 1200px, ~100KB) unless a size is requested; 360x360 is ~8KB.
+function previewImageUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.hostname.toLowerCase() !== "pbs.twimg.com" || url.searchParams.has("name")) return value;
+    const ext = /\.(jpe?g|png|webp)$/i.exec(url.pathname);
+    if (!ext) return value;
+    url.pathname = url.pathname.slice(0, -ext[0].length);
+    url.searchParams.set("format", ext[1].toLowerCase() === "jpeg" ? "jpg" : ext[1].toLowerCase());
+    url.searchParams.set("name", "360x360");
+    return url.href;
+  } catch {
+    return value;
+  }
+}
+
+function configureDownloadControls(row, item, job) {
+  const { downloadButton, stopButton, progressEl, progressFillEl, progressTextEl, progressSpeedEl } = row.refs;
+  // Rows are reused, so every call resets the controls before applying the current state.
   downloadButton.textContent = "下载";
+  downloadButton.disabled = false;
+  downloadButton.title = "";
+  downloadButton.onclick = null;
+  stopButton.onclick = null;
 
   if (job && ACTIVE_JOB_STATES.has(job.status)) {
     downloadButton.disabled = true;
@@ -271,14 +357,21 @@ function configureDownloadControls(item, job, controls) {
       formatSpeed(job.speed)
     );
     stopButton.hidden = false;
-    stopButton.addEventListener("click", async () => {
+    if (row.stopJobId !== job.id) {
+      row.stopJobId = job.id;
+      stopButton.disabled = false;
+    }
+    stopButton.onclick = async () => {
       stopButton.disabled = true;
       await sendRuntimeMessage({ type: "cancelDownloadJob", jobId: job.id });
       await loadJobsAndRender();
-    });
+    };
     return;
   }
 
+  progressEl.hidden = true;
+  stopButton.hidden = true;
+  row.stopJobId = "";
   if (item.probeStatus === "checking") {
     downloadButton.disabled = true;
     downloadButton.textContent = "检测中";
@@ -295,7 +388,7 @@ function configureDownloadControls(item, job, controls) {
   } else if (job && job.status === "error") {
     downloadButton.title = job.error || "上次下载失败，点击重试。";
   }
-  downloadButton.addEventListener("click", () => startItemDownload(item, downloadButton));
+  downloadButton.onclick = () => startItemDownload(row.item, downloadButton);
 }
 
 async function startItemDownload(item, button) {
@@ -426,7 +519,8 @@ function dedupeItems(items) {
       duration: preferred.duration || fallback.duration || 0,
       width: preferred.width || fallback.width || 0,
       height: preferred.height || fallback.height || 0,
-      quality: preferred.quality || fallback.quality || ""
+      quality: preferred.quality || fallback.quality || "",
+      primary: Boolean(preferred.primary || fallback.primary)
     });
   });
   return Array.from(byUrl.values());
@@ -468,8 +562,17 @@ function canonicalDisplayKey(item) {
         return `x:${asset}:video:${rendition}`;
       }
     }
+    // Threads lists several renditions per post; keep one row per media id (the best one wins in dedupe).
+    if (isMetaCdnHost(url.hostname) && item.mediaId && !/^media-\d+$/.test(item.mediaId)) {
+      return `threads:${item.mediaId}`;
+    }
   } catch {}
   return normalizeDisplayUrl(item.url);
+}
+
+function isMetaCdnHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return host === "cdninstagram.com" || host.endsWith(".cdninstagram.com") || host === "fbcdn.net" || host.endsWith(".fbcdn.net");
 }
 
 function isDisplayableDownload(item) {
@@ -487,6 +590,9 @@ function applyCachedThumbnail(item) {
 function sortItems(items) {
   const priority = { video: 0, hls: 1, audio: 2, media: 3 };
   return [...items].sort((a, b) => {
+    // The video of the post being viewed (e.g. a Threads /post/<code> page) comes before replies.
+    const primaryDelta = Number(Boolean(b.primary)) - Number(Boolean(a.primary));
+    if (primaryDelta) return primaryDelta;
     const previewDelta = Number(Boolean(b.thumbnail)) - Number(Boolean(a.thumbnail));
     if (previewDelta) return previewDelta;
     const qualityDelta = qualityHeight(b.quality) - qualityHeight(a.quality);
@@ -584,6 +690,7 @@ function buildDownloadTitle(item, sourceName, index) {
 function sourceNameForItem(item) {
   const host = hostFromUrl(item.url);
   if (/twimg\.com$/i.test(host) || /(?:^|\.)x\.com$/i.test(hostFromUrl(item.pageUrl || ""))) return "X视频";
+  if (/(?:^|\.)threads\.(?:com|net)$/i.test(hostFromUrl(item.pageUrl || "")) || (activeTab && isThreadsTab(activeTab) && isMetaCdnHost(host))) return "Threads视频";
   if (!host) return "网页视频";
   return host.replace(/^www\./, "").split(".")[0] || "网页视频";
 }
@@ -805,6 +912,24 @@ function executeXPageHook(tabId) {
   });
 }
 
+function executeThreadsPageHook(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["src/threads-media-hook.js"] }, (results) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(results || []);
+    });
+  });
+}
+
+function isThreadsTab(tab) {
+  try {
+    return /(^|\.)threads\.(?:com|net)$/i.test(new URL(tab.url || "").hostname);
+  } catch {
+    return false;
+  }
+}
+
 function sendRuntimeMessage(message) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -836,6 +961,7 @@ if (typeof globalThis !== "undefined") {
     directDownloadFilename,
     infoPlaceholder,
     xTweetIdFromUrl,
-    requestActiveXStatusScan
+    requestActiveXStatusScan,
+    previewImageUrl
   };
 }

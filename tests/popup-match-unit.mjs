@@ -172,6 +172,37 @@ const displayItems = api.prepareDisplayItems([
     label: "Product launch demo",
     downloadable: true,
     probeStatus: "done"
+  },
+  {
+    id: "threads-720",
+    url: "https://scontent-lax3-2.cdninstagram.com/o1/v/t16/f2/m84/clip-a.mp4?_nc_cat=1",
+    kind: "video",
+    quality: "720p",
+    duration: 15,
+    width: 1280,
+    height: 720,
+    thumbnail: "https://scontent-lax3-1.cdninstagram.com/v/t51/cover.jpg",
+    label: "@courtside · Every court for the new season",
+    mediaId: "4007130374095024395",
+    pageUrl: "https://www.threads.com/@courtside/post/DecL9g0nLEL",
+    downloadable: true,
+    probeStatus: "done"
+  },
+  {
+    id: "threads-1080",
+    url: "https://scontent-lax3-2.cdninstagram.com/o1/v/t16/f2/m84/clip-b.mp4?_nc_cat=1",
+    kind: "video",
+    quality: "1080p",
+    duration: 15,
+    width: 1920,
+    height: 1080,
+    thumbnail: "https://scontent-lax3-1.cdninstagram.com/v/t51/cover.jpg",
+    label: "@courtside · Every court for the new season",
+    mediaId: "4007130374095024395",
+    pageUrl: "https://www.threads.com/@courtside/post/DecL9g0nLEL",
+    primary: true,
+    downloadable: true,
+    probeStatus: "done"
   }
 ]);
 
@@ -187,6 +218,23 @@ assert(!displayItems.some((item) => item.kind === "dash"), "DASH rows should sta
 assert(firstHls && secondHls && failedHls, "HLS rows should be shown as extension-local download rows");
 assert(firstHls.thumbnail.includes("REALHLS"), "A generated HLS thumbnail should stay attached to its own URL");
 assert(displayItems.filter((item) => item.url.includes("/amplify_video/123456/")).length === 1, "matching X renditions should not be displayed twice");
+assert(
+  api.previewImageUrl("https://pbs.twimg.com/amplify_video_thumb/1/img/AbC.jpg") === "https://pbs.twimg.com/amplify_video_thumb/1/img/AbC?format=jpg&name=360x360",
+  "X covers should request the small 360x360 rendition"
+);
+assert(
+  api.previewImageUrl("https://pbs.twimg.com/media/AbC?format=jpg&name=small") === "https://pbs.twimg.com/media/AbC?format=jpg&name=small",
+  "X covers that already name a size are left alone"
+);
+assert(
+  api.previewImageUrl("https://scontent.cdninstagram.com/v/t51/cover.jpg?stp=x&oh=sig") === "https://scontent.cdninstagram.com/v/t51/cover.jpg?stp=x&oh=sig",
+  "signed Meta CDN covers must not be rewritten"
+);
+const threadsRows = displayItems.filter((item) => item.url.includes("cdninstagram.com"));
+assert(threadsRows.length === 1, "Threads renditions of one post video should be displayed once");
+assert(threadsRows[0].quality === "1080p", "the highest Threads rendition should be kept");
+assert(displayItems[0].url.includes("cdninstagram.com"), "the primary post video should be listed first");
+assert(/^@courtside · Every court/.test(threadsRows[0].displayTitle), "Threads rows should use the post author and caption as title");
 
 console.log(JSON.stringify({
   ok: true,
@@ -197,7 +245,8 @@ console.log(JSON.stringify({
     "HLS is shown without requiring a local helper",
     "Generated HLS thumbnails remain URL-specific",
     "opening an exact X status triggers a background media scan independent of page DOM",
-    "the same X asset and resolution is deduplicated across page and background discovery"
+    "the same X asset and resolution is deduplicated across page and background discovery",
+    "Threads renditions collapse to the best one per media id with the post caption as title"
   ]
 }, null, 2));
 

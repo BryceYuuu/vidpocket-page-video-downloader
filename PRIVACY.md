@@ -22,6 +22,10 @@ On X or Twitter pages, VidPocket first reads public media information already av
 
 This request goes directly from the browser to X. It is not sent through a VidPocket server. VidPocket does not use this fallback for private, protected, login-restricted, or DRM-protected media.
 
+## Threads Posts
+
+On `threads.com` and `threads.net`, VidPocket reads post data that Threads has already delivered to the open page (embedded JSON and GraphQL responses) to find each video's MP4 address, cover image, author name, caption, and duration. This happens locally in the page; VidPocket sends no additional request to Threads. Only HTTPS media hosted on Meta's `cdninstagram.com` or `fbcdn.net` CDNs is accepted.
+
 ## Local Media Processing
 
 Direct media files are saved through Chrome's downloads API. Unencrypted HLS processing and thumbnail generation run in a packaged offscreen extension document using code included with VidPocket. Media is fetched from its source host and processed locally in the browser. VidPocket does not require or contact a local helper service.
@@ -29,6 +33,8 @@ Direct media files are saved through Chrome's downloads API. Unencrypted HLS pro
 ## Local Storage
 
 VidPocket may store download job state in `chrome.storage.local` so a user-initiated task can continue when the toolbar popup closes. This can include a media URL, filename, progress, status, byte counts, and timestamps. The data remains in the extension's local browser storage and is not uploaded to VidPocket.
+
+VidPocket also keeps the media detected on each open tab (URLs, titles, previews, duration, and resolution) in `chrome.storage.session`, so the list survives when Chrome suspends the background worker. Chrome clears session storage when the browser closes, and an entry is dropped when its tab navigates or closes.
 
 ## Data Sharing
 
@@ -91,6 +97,10 @@ VidPocket（视频口袋）是一款本地优先的 Chrome 扩展，用于识别
 
 该请求由浏览器直接发送给 X，不经过 VidPocket 服务器。VidPocket 不会使用此方式访问私密、受保护、需要登录或受 DRM 保护的媒体。
 
+## Threads 帖子
+
+在 `threads.com` 和 `threads.net` 上，VidPocket 会读取 Threads 已经发送到当前网页的帖子数据（内嵌 JSON 和 GraphQL 响应），用于获取视频的 MP4 地址、封面图、作者名、正文和时长。该过程在网页本地完成，VidPocket 不会额外向 Threads 发送请求。只接受 Meta CDN（`cdninstagram.com` 或 `fbcdn.net`）上的 HTTPS 媒体。
+
 ## 本地媒体处理
 
 直接媒体文件通过 Chrome 下载 API 保存。未加密 HLS 处理和预览图生成在扩展安装包内的 offscreen 文档中运行，使用的代码全部随 VidPocket 提交。媒体从原始来源域名获取，并在浏览器本地处理。VidPocket 不需要也不会连接本地助手服务。
@@ -98,6 +108,8 @@ VidPocket（视频口袋）是一款本地优先的 Chrome 扩展，用于识别
 ## 本地存储
 
 VidPocket 可能使用 `chrome.storage.local` 保存下载任务状态，使用户主动发起的任务在插件弹窗关闭后仍可继续。内容可能包括媒体 URL、文件名、进度、状态、字节数和时间戳。这些数据保留在扩展的浏览器本地存储中，不会上传给 VidPocket。
+
+VidPocket 还会把每个已打开标签页识别到的媒体（地址、标题、预览图、时长和分辨率）保存在 `chrome.storage.session` 中，使后台进程被 Chrome 挂起后列表不会丢失。浏览器关闭时 Chrome 会清空该存储；标签页跳转或关闭时对应记录也会删除。
 
 ## 数据共享
 

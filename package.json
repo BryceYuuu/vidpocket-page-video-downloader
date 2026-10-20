@@ -1,15 +1,18 @@
 {
   "name": "vidpocket",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": false,
   "type": "module",
   "description": "A local-first Chrome webpage video downloader for direct MP4/WebM files and unencrypted HLS streams.",
   "license": "MIT",
   "scripts": {
-    "check": "node --check src/background.js && node --check src/content.js && node --check src/x-media-hook.js && node --check src/popup.js && node --check src/offscreen.js",
-    "test": "npm run check && node tests/toolbar-popup-unit.mjs && node tests/x-media-hook-unit.mjs && node tests/content-x-bridge-unit.mjs && node tests/x-syndication-unit.mjs && node tests/background-unit.mjs && node tests/download-job-unit.mjs && node tests/popup-match-unit.mjs && node tests/hls-browser-unit.mjs && node tests/ffmpeg-core-unit.mjs",
+    "check": "node --check src/background.js && node --check src/content.js && node --check src/x-media-hook.js && node --check src/threads-media-hook.js && node --check src/popup.js && node --check src/offscreen.js",
+    "test": "npm run check && node tests/toolbar-popup-unit.mjs && node tests/x-media-hook-unit.mjs && node tests/threads-media-hook-unit.mjs && node tests/content-x-bridge-unit.mjs && node tests/content-threads-bridge-unit.mjs && node tests/x-syndication-unit.mjs && node tests/background-unit.mjs && node tests/download-job-unit.mjs && node tests/popup-match-unit.mjs && node tests/hls-browser-unit.mjs && node tests/hls-parallel-tracks-unit.mjs",
+    "test:slow": "node tests/ffmpeg-core-unit.mjs",
+    "test:all": "npm test && npm run test:slow",
     "test:chrome-live": "node tests/chrome-extension-e2e-live.mjs",
     "test:x-live": "node tests/x-syndication-live.mjs",
+    "test:threads-live": "node tests/threads-live.mjs",
     "package:store": "node scripts/package-extension.mjs"
   },
   "keywords": [
@@ -22,6 +25,7 @@
     "media",
     "video",
     "video-downloader",
+    "threads-video-downloader",
     "m3u8",
     "m3u8-downloader",
     "hls",

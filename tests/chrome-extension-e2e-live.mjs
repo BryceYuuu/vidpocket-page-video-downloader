@@ -65,6 +65,16 @@ try {
   const popupTarget = await waitForTarget(baseUrl, (target) => target.id === createdPopup.targetId);
   popupClient = await connectCdp(popupTarget.webSocketDebuggerUrl);
   await popupClient.send("Runtime.enable");
+  // Target the X tab explicitly; a popup opened as its own tab would otherwise treat itself as the active tab.
+  await popupClient.send("Page.enable");
+  const xTabId = await evaluate(popupClient, `new Promise((resolve) => chrome.tabs.query({}, (tabs) => {
+    const address = (item) => String(item.url || item.pendingUrl || "");
+    const tab = tabs.find((item) => address(item).includes("/status/${tweetId}")) ||
+      tabs.find((item) => !address(item).startsWith("chrome-extension://"));
+    resolve(tab ? tab.id : -1);
+  }))`);
+  assert.ok(xTabId >= 0, "the X tab should be visible to the extension");
+  await popupClient.send("Page.navigate", { url: `${popupUrl}?tabId=${xTabId}` });
 
   const popupState = await waitForPopupItems(popupClient, 5);
   assert.ok(popupState.items.length >= 5, "popup should render the live X MP4 variants");

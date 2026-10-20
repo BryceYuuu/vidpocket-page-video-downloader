@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2
+
+- Added Threads video support on `threads.com` and `threads.net`. A packaged page hook now loads at document start and reads the post data Threads already sends to the page (embedded JSON and GraphQL responses), including `for (;;);`-prefixed and newline-delimited responses. Media is accepted only from Meta's `cdninstagram.com` / `fbcdn.net` CDNs.
+- Threads rows show the post author and caption, the real cover image, duration, and resolution; renditions of one video collapse to the best one, and on a `/post/...` page that post's own video is listed first.
+- DASH byte-range slices (`bytestart`/`byteend`) are no longer offered as downloads, so a saved file is never a silent or truncated fragment.
+- Fixed a content-script error (`visibleArea` was undefined) that stopped page detection from reaching the extension on any page with a `<video>` element.
+- Detection results are cached in `chrome.storage.session`, so reopening the popup after Chrome suspends the background worker keeps the list instead of starting over.
+- The toolbar popup uses `pagehide` instead of the deprecated `unload` event.
+- Faster popup: rows are reused between refreshes, so covers and video previews are no longer reloaded every time download progress updates; the cached list appears as soon as the popup opens while a rescan runs; rows below the fold load their previews only when scrolled near.
+- Smaller covers: Threads uses the smallest cover at least 320px wide and X requests its 360x360 rendition (about 8x less image data in the popup).
+- HLS jobs with a separate audio track download video and audio at the same time; if one track fails or the job is stopped, the other is cancelled.
+- `npm test` skips the slow FFmpeg WebAssembly check; run it with `npm run test:slow` or everything with `npm run test:all` (CI runs `test:all`). Added `npm run test:threads-live`.
+
 ## 0.5.1
 
 - Added a bounded background fallback for public X posts whose player exposes only a `blob:` URL. The fallback queries X's public syndication response and accepts media only from `video.twimg.com` with previews from `pbs.twimg.com`.

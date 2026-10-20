@@ -22,6 +22,7 @@ Key features:
 - Detect accessible webpage video and media resources from the active tab.
 - Show matching preview thumbnails, duration, format, resolution, source, and useful titles when available.
 - Detect public X video renditions on supported posts, including direct MP4 quality options.
+- Detect Threads videos with the post author, caption, cover, and duration, and save the complete MP4 with audio.
 - Download direct MP4, WebM, and other accessible media through Chrome's native download system.
 - Process supported unencrypted HLS/m3u8 streams locally into MP4 with packaged browser components.
 - Keep user-initiated download progress available after the short-lived toolbar popup closes.
@@ -39,6 +40,7 @@ Privacy and limitations:
 
 - Media detection and supported HLS processing are performed locally in the browser.
 - Public X post metadata may be requested directly from X when the page exposes only a temporary `blob:` player URL.
+- On Threads, video details are read from post data already loaded in the page; no extra request is made.
 - VidPocket does not bypass DRM, encryption, paywalls, login restrictions, access controls, or platform protections.
 - YouTube protected downloads are not supported.
 - Availability depends on what the webpage and media host make directly accessible.
@@ -51,6 +53,7 @@ Use VidPocket only for media you own or have permission to save.
 - Real preview thumbnails and duration
 - Direct MP4/WebM downloads
 - Public X video quality detection
+- Threads video detection and download
 - Local unencrypted HLS-to-MP4 processing
 - Local-first, no analytics or hosted backend
 
@@ -67,6 +70,7 @@ VidPocket-网页视频下载（视频口袋）是一款本地优先的 Chrome �
 - 识别当前标签页中可访问的网页视频和媒体资源。
 - 在可获取时显示匹配的预览图、时长、格式、分辨率、来源和易读标题。
 - 在支持的 X 公开帖子中识别视频，并提供多个直接 MP4 清晰度选项。
+- 识别 Threads 视频，显示作者、正文、封面和时长，并保存带音频的完整 MP4。
 - 通过 Chrome 原生下载系统保存可直接访问的 MP4、WebM 和其他媒体文件。
 - 使用安装包内的浏览器组件，在本地把受支持的未加密 HLS/m3u8 处理为 MP4。
 - 用户发起下载后，即使短暂的工具栏弹窗关闭，也能保留任务状态和进度。
@@ -84,6 +88,7 @@ VidPocket-网页视频下载（视频口袋）是一款本地优先的 Chrome �
 
 - 媒体识别和受支持的 HLS 处理在浏览器本地完成。
 - 当 X 页面只暴露临时 `blob:` 播放地址时，扩展可能直接向 X 请求公开帖子媒体元数据。
+- 在 Threads 上，视频信息来自网页已加载的帖子数据，不会额外发送请求。
 - VidPocket 不绕过 DRM、加密、付费墙、登录限制、访问控制或平台保护。
 - 不支持下载 YouTube 受保护视频。
 - 能否下载取决于网页和媒体来源是否提供可直接访问的资源。
@@ -96,6 +101,7 @@ VidPocket-网页视频下载（视频口袋）是一款本地优先的 Chrome �
 - 真实预览图与视频时长
 - 直接 MP4/WebM 下载
 - X 公开视频多清晰度识别
+- Threads 视频识别与下载
 - 未加密 HLS 本地转 MP4
 - 本地优先，无统计分析和托管后端
 
@@ -127,7 +133,7 @@ Used to run packaged, user-initiated unencrypted HLS downloading, MP4 generation
 
 ### `storage`
 
-Used to keep local download job state, progress, filenames, and byte counts so a user-initiated task can continue after the toolbar popup closes. This data is not uploaded to VidPocket.
+Used to keep local download job state, progress, filenames, and byte counts so a user-initiated task can continue after the toolbar popup closes, and to cache the current tabs' detected media in session storage while Chrome suspends the background worker. This data is not uploaded to VidPocket.
 
 ### Host permissions `http://*/*` and `https://*/*`
 
@@ -165,7 +171,7 @@ VidPocket 用于识别当前网页中暴露的媒体资源，让用户预览并�
 
 ### `storage`
 
-用于在本地保存下载任务状态、进度、文件名和字节数，使用户发起的任务在工具栏弹窗关闭后仍可继续。这些数据不会上传给 VidPocket。
+用于在本地保存下载任务状态、进度、文件名和字节数，使用户发起的任务在工具栏弹窗关闭后仍可继续；并在会话存储中缓存当前标签页识别到的媒体，避免后台进程被挂起后列表丢失。这些数据不会上传给 VidPocket。
 
 ### 主机权限 `http://*/*` 和 `https://*/*`
 

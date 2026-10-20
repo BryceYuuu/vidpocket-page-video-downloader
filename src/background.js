@@ -5,6 +5,8 @@ const PLAYLIST_EXT_RE = /\.(m3u8|mpd)(?:[?#]|$)/i;
 const STREAM_SEGMENT_EXT_RE = /\.(m4s|cmf[av]|ts)(?:[?#]|$)/i;
 const DIRECT_DOWNLOAD_KINDS = new Set(["video", "audio", "media"]);
 const JOB_STORAGE_KEY = "vidpocketDownloadJobs";
+const MEDIA_STATE_KEY = "vidpocketMediaByTab";
+const MAX_PERSISTED_THUMBNAIL_CHARS = 16 * 1024;
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const ACTIVE_JOB_STATES = new Set(["queued", "preparing", "downloading", "processing", "saving"]);
 const MAX_X_TWEETS_PER_SCAN = 12;
@@ -18,18 +20,24 @@ const thumbnailProbesInFlight = new Set();
 const downloadJobs = new Map();
 const xSyndicationCache = new Map();
 const xSyndicationInFlight = new Map();
+const tabsResetSinceStartup = new Set();
 let jobsLoadPromise = loadStoredJobs();
+let mediaStateLoadPromise = loadMediaState();
 let persistJobsTimer = 0;
+let persistMediaStateTimer = 0;
 let creatingOffscreenDocument = null;
 
 chrome.action.setBadgeBackgroundColor({ color: "#0f766e" });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  tabsResetSinceStartup.add(tabId);
   mediaByTab.delete(tabId);
+  persistMediaStateSoon();
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading") {
+    tabsResetSinceStartup.add(tabId);
     mediaByTab.delete(tabId);
     updateBadge(tabId);
   }
@@ -85,6 +93,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message.type !== "string") {
       return { ok: false, error: "Unknown message" };
     }
+    await mediaStateLoadPromise;
 
     if (message.type === "contentCandidates") {
       const tabId = sender.tab && sender.tab.id;
@@ -938,6 +947,88 @@ async function loadStoredJobs() {
   }
 }
 
+// The MV3 service worker is suspended when idle; session storage keeps the
+// per-tab detection results so reopening the popup does not start from zero.
+async function loadMediaState() {
+  if (!chrome.storage || !chrome.storage.session) {
+    return;
+  }
+  try {
+    const result = await sessionStorageGet(MEDIA_STATE_KEY);
+    const stored = result && result[MEDIA_STATE_KEY];
+    if (!stored || typeof stored !== "object") {
+      return;
+    }
+    Object.entries(stored).forEach(([rawTabId, saved]) => {
+      const tabId = Number(rawTabId);
+      if (!Number.isInteger(tabId) || tabsResetSinceStartup.has(tabId) || !saved || !Array.isArray(saved.items)) {
+        return;
+      }
+      const state = getTabState(tabId);
+      saved.items.forEach((item) => {
+        if (item && item.id && !state.items.has(item.id)) {
+          state.items.set(item.id, item);
+          if (item.probeStatus === "checking") {
+            scheduleProbe(tabId, item.id, item.url);
+          }
+        }
+      });
+      state.context = { ...(saved.context || {}), ...(state.context || {}) };
+      if (!state.xScan && saved.xScan) {
+        state.xScan = saved.xScan;
+      }
+    });
+  } catch {
+    // Detection state is a cache; a fresh scan rebuilds it.
+  }
+}
+
+function persistMediaStateSoon() {
+  if (!chrome.storage || !chrome.storage.session) {
+    return;
+  }
+  clearTimeout(persistMediaStateTimer);
+  persistMediaStateTimer = setTimeout(() => {
+    const snapshot = {};
+    mediaByTab.forEach((state, tabId) => {
+      if (!state.items.size) {
+        return;
+      }
+      snapshot[tabId] = {
+        context: state.context || {},
+        xScan: state.xScan || null,
+        items: Array.from(state.items.values()).map((item) => (
+          item.thumbnail && item.thumbnail.length > MAX_PERSISTED_THUMBNAIL_CHARS ? { ...item, thumbnail: "" } : item
+        ))
+      };
+    });
+    // If the write fails (e.g. session quota), drop the key so an outdated snapshot is never restored.
+    sessionStorageSet({ [MEDIA_STATE_KEY]: snapshot }).catch(() => {
+      chrome.storage.session.remove(MEDIA_STATE_KEY, () => void chrome.runtime.lastError);
+    });
+  }, 500);
+}
+
+function sessionStorageGet(key) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.session.get(key, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(result || {});
+    });
+  });
+}
+
+function sessionStorageSet(value) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.session.set(value, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
 function persistJobsSoon() {
   if (!chrome.storage || !chrome.storage.local) {
     return;
@@ -1024,6 +1115,9 @@ function addCandidate(tabId, rawCandidate) {
   const contentType = rawCandidate.contentType || (existing && existing.contentType) || "";
   const contentLength = rawCandidate.contentLength || (existing && existing.contentLength) || 0;
   const hasPlaybackMetadata = Boolean(width || height || rawCandidate.duration || (existing && existing.duration));
+  if (isByteRangeSegmentUrl(url)) {
+    return false;
+  }
   if (isLikelyMediaFragment(url, contentType, contentLength) && !hasPlaybackMetadata) {
     if (existing) {
       state.items.delete(id);
@@ -1033,7 +1127,8 @@ function addCandidate(tabId, rawCandidate) {
   }
 
   const kind = rawCandidate.kind || (existing && existing.kind) || classifyMedia(url, contentType);
-  const needsProbe = needsDirectMediaProbe(url, kind, contentLength, hasPlaybackMetadata);
+  const forceProbe = rawCandidate.requiresProbe === true && (!existing || existing.probeStatus !== "done");
+  const needsProbe = forceProbe || needsDirectMediaProbe(url, kind, contentLength, hasPlaybackMetadata);
   const downloadable = isDirectDownloadableUrl(url, kind, contentLength, hasPlaybackMetadata) && !needsProbe;
 
   const candidate = {
@@ -1056,6 +1151,8 @@ function addCandidate(tabId, rawCandidate) {
     previewStatus: rawCandidate.previewStatus || (existing && existing.previewStatus) || "",
     previewError: rawCandidate.previewError || (existing && existing.previewError) || "",
     mediaId: rawCandidate.mediaId || (existing && existing.mediaId) || "",
+    primary: Boolean(rawCandidate.primary || (existing && existing.primary)),
+    requiresProbe: forceProbe,
     downloadable,
     probeStatus: needsProbe ? "checking" : ((downloadable || !DIRECT_DOWNLOAD_KINDS.has(kind)) ? "done" : "blocked"),
     firstSeen: (existing && existing.firstSeen) || now,
@@ -1129,6 +1226,7 @@ function getCandidate(tabId, id) {
 }
 
 function updateBadge(tabId) {
+  persistMediaStateSoon();
   const count = getCandidates(tabId).filter(isBadgeCandidate).length;
   chrome.action.setBadgeText({
     tabId,
@@ -1243,6 +1341,16 @@ function isLikelyMediaFragment(url, contentType = "", contentLength = 0) {
     return true;
   }
   return contentLength > 0 && contentLength < MIN_STANDALONE_MEDIA_BYTES;
+}
+
+// DASH players (Threads/Instagram/Facebook) fetch slices of a track with bytestart/byteend query params.
+function isByteRangeSegmentUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams.has("bytestart") || parsed.searchParams.has("byteend");
+  } catch {
+    return false;
+  }
 }
 
 function isPlaylistType(contentType) {

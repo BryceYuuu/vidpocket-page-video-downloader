@@ -14,6 +14,15 @@ VidPocket has one purpose: detect media resources exposed by the active webpage 
 
 The X player currently exposes only a temporary `blob:` URL to the DOM. VidPocket therefore uses two packaged detection paths: an early page response parser and a bounded fallback that sends the visible public post ID directly to X's public `cdn.syndication.twimg.com` metadata endpoint. The fallback accepts media only from `video.twimg.com` and previews only from `pbs.twimg.com`. No request goes through a VidPocket server.
 
+### Threads video test
+
+1. Open a public Threads video post, for example `https://www.threads.com/@wnba/post/Des5YAOjj2d`.
+2. Click the VidPocket toolbar icon.
+3. The first row should be that post's video, titled with the author and caption (for example `@wnba · ...`), with its cover image and duration.
+4. Click Download. Chrome should save a playable MP4 with video and audio.
+
+On Threads the `<video>` element usually plays a `blob:` stream. A packaged page script reads the post data Threads already delivered to the page and accepts only HTTPS media on Meta's `cdninstagram.com` / `fbcdn.net` CDNs. It sends no extra requests.
+
 ### Generic direct-media test
 
 1. Open a webpage containing an accessible MP4 or WebM file.
@@ -27,7 +36,7 @@ The X player currently exposes only a temporary `blob:` URL to the DOM. VidPocke
 - The toolbar action uses `popup.html`; it does not open a standalone webpage or window.
 - Direct files use Chrome's native download path for normal browser download performance.
 - Unencrypted HLS jobs run in the packaged `offscreen.html` document using packaged mux.js and FFmpeg WebAssembly. No system FFmpeg or local helper is required.
-- `chrome.storage.local` stores job status so user-initiated work can continue when Chrome closes the short-lived toolbar popup.
+- `chrome.storage.local` stores job status so user-initiated work can continue when Chrome closes the short-lived toolbar popup. `chrome.storage.session` caches detected media per open tab while the background worker is suspended.
 - All JavaScript and WebAssembly are packaged. VidPocket does not execute remote code.
 - VidPocket has no analytics, advertising, telemetry, account service, or hosted backend.
 - VidPocket does not bypass DRM, encryption, paywalls, login restrictions, access controls, or platform protections.
@@ -46,6 +55,15 @@ VidPocket 的单一用途是：识别当前网页中暴露的媒体资源，并�
 
 当前 X 播放器在 DOM 中只暴露临时 `blob:` 地址。因此 VidPocket 使用两条安装包内检测路径：页面响应早期解析，以及有数量限制的公开元数据兜底。兜底会把可见公开帖子的数字 ID 直接发送到 X 的 `cdn.syndication.twimg.com` 公开接口，只接受 `video.twimg.com` 媒体和 `pbs.twimg.com` 预览图。请求不经过 VidPocket 服务器。
 
+### Threads 视频测试
+
+1. 打开一个公开的 Threads 视频帖子，例如 `https://www.threads.com/@wnba/post/Des5YAOjj2d`。
+2. 点击 Chrome 工具栏中的 VidPocket 图标。
+3. 第一行应为该帖子的视频，标题为作者和正文（例如 `@wnba · ...`），并显示封面和时长。
+4. 点击“下载”，Chrome 应保存同时包含画面和声音、可正常播放的 MP4。
+
+Threads 的 `<video>` 元素通常播放 `blob:` 流。安装包内的页面脚本读取 Threads 已发送到网页的帖子数据，只接受 Meta CDN（`cdninstagram.com` / `fbcdn.net`）上的 HTTPS 媒体，不会额外发送请求。
+
 ### 普通直接媒体测试
 
 1. 打开包含可访问 MP4 或 WebM 文件的网页。
@@ -59,7 +77,7 @@ VidPocket 的单一用途是：识别当前网页中暴露的媒体资源，并�
 - 工具栏入口使用 `popup.html`，不会打开单独网页或窗口。
 - 直接文件走 Chrome 原生下载路径，保持正常浏览器下载速度。
 - 未加密 HLS 任务在安装包内的 `offscreen.html` 中运行，使用随包提交的 mux.js 和 FFmpeg WebAssembly，不需要系统 FFmpeg 或本地助手。
-- `chrome.storage.local` 保存任务状态，使用户发起的任务在短暂弹窗关闭后仍能继续。
+- `chrome.storage.local` 保存任务状态，使用户发起的任务在短暂弹窗关闭后仍能继续；`chrome.storage.session` 在后台进程挂起期间缓存每个标签页识别到的媒体。
 - 所有 JavaScript 和 WebAssembly 都随安装包提交，不执行远程代码。
 - VidPocket 不包含分析、广告、遥测、账户服务或托管后端。
 - VidPocket 不绕过 DRM、加密、付费墙、登录限制、访问控制或平台保护。

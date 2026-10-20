@@ -2,6 +2,8 @@ const DIRECT_MEDIA_EXT_RE = /\.(mp4|m4v|mov|webm|mkv|avi|mp3|m4a|aac|ogg|oga|opu
 const PLAYLIST_EXT_RE = /\.(m3u8|mpd)(?:[?#]|$)/i;
 const X_HOOK_RESPONSE_SOURCE = "vidpocket-x-media-hook";
 const X_HOOK_REQUEST_SOURCE = "vidpocket-content";
+const THREADS_HOOK_RESPONSE_SOURCE = "vidpocket-threads-media-hook";
+const THREADS_HOOK_REQUEST_SOURCE = "vidpocket-content";
 const URL_ATTRIBUTES = [
   "src",
   "href",
@@ -40,10 +42,11 @@ let nextMediaId = 1;
 const mediaIds = new WeakMap();
 const pageApiCandidates = new Map();
 
-window.addEventListener("message", handleXMediaMessage);
+window.addEventListener("message", handlePageMediaMessage);
 
 scanSoon();
 requestXMediaScan();
+requestThreadsMediaScan();
 requestXSyndicationScan(true).catch(() => {});
 
 document.addEventListener("loadedmetadata", scanSoon, true);
@@ -56,6 +59,7 @@ observeDocument();
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "scanNow") {
     requestXMediaScan();
+    requestThreadsMediaScan();
     const candidates = scan();
     sendCandidates(candidates, true);
     requestXSyndicationScan(true)
@@ -178,11 +182,15 @@ function addCandidate(map, url, details) {
 
   const key = normalizeUrl(cleanUrl);
   const existing = map.get(key) || {};
+  // Post metadata from the page API (caption, author, media id, cover) beats generic DOM guesses.
+  const keepPageApi = String(existing.source || "").split(", ").includes("page-api") && details.source !== "page-api";
+  const preferred = keepPageApi ? existing : details;
+  const fallback = keepPageApi ? details : existing;
   map.set(key, {
     url: cleanUrl,
     kind: details.kind || existing.kind || inferKind(cleanUrl),
     source: mergeSource(existing.source, details.source || "dom"),
-    label: firstUsefulLabel([details.label, existing.label, labelFromUrl(cleanUrl)]),
+    label: firstUsefulLabel([preferred.label, fallback.label, labelFromUrl(cleanUrl)]),
     pageUrl: location.href,
     frameUrl: location.href,
     duration: details.duration || existing.duration || 0,
@@ -190,10 +198,11 @@ function addCandidate(map, url, details) {
     height: details.height || existing.height || 0,
     quality: details.quality || existing.quality || "",
     format: details.format || existing.format || formatFor(cleanUrl),
-    thumbnail: details.thumbnail || existing.thumbnail || "",
-    mediaId: details.mediaId || existing.mediaId || "",
+    thumbnail: preferred.thumbnail || fallback.thumbnail || "",
+    mediaId: preferred.mediaId || fallback.mediaId || "",
     contentType: details.contentType || existing.contentType || "",
-    bitrate: details.bitrate || existing.bitrate || 0
+    bitrate: details.bitrate || existing.bitrate || 0,
+    primary: Boolean(details.primary || existing.primary)
   });
 }
 
@@ -218,6 +227,16 @@ function requestXMediaScan() {
   window.postMessage({
     source: X_HOOK_REQUEST_SOURCE,
     type: "scan-x-media"
+  }, "*");
+}
+
+function requestThreadsMediaScan() {
+  if (!isThreadsPage()) {
+    return;
+  }
+  window.postMessage({
+    source: THREADS_HOOK_REQUEST_SOURCE,
+    type: "scan-threads-media"
   }, "*");
 }
 
@@ -286,14 +305,18 @@ function xTweetIdFromUrl(value) {
   }
 }
 
-function handleXMediaMessage(event) {
-  if (event.source !== window || !isXPage() || !event.data || event.data.source !== X_HOOK_RESPONSE_SOURCE || event.data.type !== "candidates") {
+function handlePageMediaMessage(event) {
+  if (event.source !== window || !event.data || event.data.type !== "candidates") {
     return;
   }
+  const isXBridge = isXPage() && event.data.source === X_HOOK_RESPONSE_SOURCE;
+  const isThreadsBridge = isThreadsPage() && event.data.source === THREADS_HOOK_RESPONSE_SOURCE;
+  if (!isXBridge && !isThreadsBridge) return;
+
   const candidates = Array.isArray(event.data.candidates) ? event.data.candidates.slice(0, 200) : [];
   let changed = false;
   candidates.forEach((rawCandidate) => {
-    const candidate = normalizeXBridgeCandidate(rawCandidate);
+    const candidate = isXBridge ? normalizeXBridgeCandidate(rawCandidate) : normalizeThreadsBridgeCandidate(rawCandidate);
     if (!candidate) {
       return;
     }
@@ -355,6 +378,10 @@ function isXPage() {
   return /(^|\.)(?:x\.com|twitter\.com)$/i.test(location.hostname);
 }
 
+function isThreadsPage() {
+  return /(^|\.)threads\.(?:com|net)$/i.test(location.hostname);
+}
+
 function isAllowedXMediaUrl(value) {
   try {
     const url = new URL(value);
@@ -368,6 +395,58 @@ function isAllowedXThumbnailUrl(value) {
   try {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname.toLowerCase() === "pbs.twimg.com";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeThreadsBridgeCandidate(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const url = sanitizeUrl(String(value.url || ""));
+  if (!url || !isAllowedThreadsMediaUrl(url)) {
+    return null;
+  }
+  const thumbnail = sanitizeUrl(String(value.thumbnail || ""));
+  const isHls = /\.m3u8(?:[?#]|$)/i.test(url) || /mpegurl/i.test(String(value.contentType || ""));
+  const duration = Math.max(0, Math.min(24 * 60 * 60, Number(value.duration) || 0));
+  const width = safeDimension(value.width);
+  const height = safeDimension(value.height);
+  return {
+    url,
+    kind: isHls ? "hls" : "video",
+    source: "page-api",
+    label: String(value.label || "").replace(/\s+/g, " ").trim().slice(0, 140),
+    pageUrl: location.href,
+    frameUrl: location.href,
+    duration,
+    width,
+    height,
+    quality: String(value.quality || (height ? `${height}p` : "")).slice(0, 20),
+    format: isHls ? "HLS" : "MP4",
+    thumbnail: thumbnail && isAllowedThreadsMediaUrl(thumbnail) ? thumbnail : "",
+    mediaId: String(value.mediaId || "").slice(0, 100),
+    contentType: isHls ? "application/x-mpegURL" : "video/mp4",
+    bitrate: Math.max(0, Number(value.bitrate) || 0),
+    primary: isCurrentThreadsPost(value.postCode),
+    force: true,
+    requiresProbe: !isHls
+  };
+}
+
+function isCurrentThreadsPost(postCode) {
+  const code = String(postCode || "");
+  const match = /\/post\/([A-Za-z0-9_-]+)/.exec(location.pathname || "");
+  return Boolean(code && match && match[1] === code);
+}
+
+function isAllowedThreadsMediaUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const isThreadsCdn = host === "cdninstagram.com" || host.endsWith(".cdninstagram.com") || host === "fbcdn.net" || host.endsWith(".fbcdn.net");
+    return url.protocol === "https:" && isThreadsCdn;
   } catch {
     return false;
   }
@@ -603,6 +682,18 @@ function findBestVideoPreview() {
   }
 
   return { thumbnail: "", duration: 0, width: 0, height: 0 };
+}
+
+function visibleArea(element) {
+  if (!element || typeof element.getBoundingClientRect !== "function") {
+    return 0;
+  }
+  const rect = element.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const width = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+  const height = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+  return width * height;
 }
 
 function findMetadataThumbnail() {

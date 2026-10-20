@@ -29,10 +29,10 @@ After changing extension files, click Reload on the VidPocket card in `chrome://
 
 ```sh
 npm run package:store
-unzip -t dist/vidpocket-0.5.1.zip
+unzip -t dist/vidpocket-0.5.2.zip
 ```
 
-Upload `dist/vidpocket-0.5.1.zip`. Do not zip its containing folder again; `manifest.json` must be at the archive root.
+Upload `dist/vidpocket-0.5.2.zip`. Do not zip its containing folder again; `manifest.json` must be at the archive root.
 
 ## Troubleshooting
 
@@ -52,6 +52,12 @@ Open Chrome's Extensions menu and pin VidPocket.
 - Open the individual public `/status/...` page and click Refresh.
 - Confirm the post is public and still available.
 - Private or protected posts are not accessed by the public metadata fallback.
+
+### Threads video is not detected
+
+- Reload the Threads page after installing or updating VidPocket, then open the popup again.
+- Open the individual `/post/...` page and click Refresh.
+- Private posts or posts you cannot see in the browser are not accessible.
 
 ### An HLS job fails
 

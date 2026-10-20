@@ -6,20 +6,20 @@
 
 ## Latest Release
 
-**Current stable version: [v0.5.1](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.1)**
+**Current stable version: [v0.5.2](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.2)**
 
 - **Recommended installation:** [Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii)
 - **Latest package and source:** [GitHub Releases](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/latest)
 - **Complete version history:** [CHANGELOG.md](CHANGELOG.md)
 
-### What's New in v0.5.1
+### What's New in v0.5.2
 
-- Runs as a self-contained Chrome extension with no local helper, system FFmpeg, Node.js runtime, or separate setup required.
-- Restores public X video detection when the page exposes only a temporary `blob:` player URL.
-- Shows matching X thumbnails, readable post-derived titles, duration, resolution, and available MP4/HLS quality variants.
-- Keeps direct MP4/WebM files on Chrome's native download path and processes supported unencrypted HLS locally with packaged WebAssembly components.
-- Preserves user-started job progress after the toolbar popup closes.
-- Adds clean-profile Chrome tests covering detection, previews, downloads, MP4 validity, video, and audio.
+- Adds Threads video support on `threads.com` and `threads.net`: the post author and caption as the title, the real cover, duration, and resolution, with the viewed post's own video listed first. Saved files are complete MP4s with audio.
+- Fixes a detection bug (since 0.5.0) that stopped page videos from reaching the popup on any page with a `<video>` element.
+- Never offers partial DASH segments as downloads, so saved files are not silent or truncated.
+- Faster popup: the list appears almost immediately, covers are about 8x smaller and are no longer reloaded while downloads update, and off-screen previews load only when scrolled into view.
+- HLS streams with a separate audio track download video and audio at the same time.
+- Keeps the detected list when Chrome suspends the extension's background worker.
 
 ## Features
 
@@ -27,6 +27,7 @@
 - Detects accessible direct MP4, WebM, audio, and media URLs.
 - Shows matching thumbnails, duration, format, resolution, source, and readable titles when available.
 - Recovers public X video quality variants when the page player exposes only a temporary `blob:` URL.
+- Detects Threads videos with the post author, caption, cover, and duration, and saves the complete MP4 with audio.
 - Downloads direct files through Chrome's native downloads API.
 - Processes supported unencrypted HLS/m3u8 streams into MP4 inside the packaged extension.
 - Keeps user-initiated job progress in local extension storage when the popup closes.
@@ -63,6 +64,10 @@ Modern X pages often expose only a `blob:` player URL. VidPocket uses a packaged
 
 Private, protected, login-restricted, encrypted, and DRM-protected media are not bypassed.
 
+## Threads Video Detection
+
+Threads plays most videos through a `blob:` player, so the `<video>` element alone is not enough. On `threads.com` and `threads.net`, a packaged page hook reads the post data Threads already delivers to the page (embedded JSON and GraphQL responses) and picks the complete MP4 version of each video, which includes audio. Only HTTPS media and covers on Meta's `cdninstagram.com` / `fbcdn.net` CDNs are accepted. Partial DASH byte-range requests are ignored. No extra request is sent to Threads or any other server.
+
 ## Limitations
 
 VidPocket does not promise support for every website. It does not bypass DRM, encryption, paywalls, login restrictions, access controls, or platform protections. YouTube protected downloads are not supported. Availability depends on what the webpage and media host make directly accessible.
@@ -86,8 +91,10 @@ npm run package:store
 Optional release QA:
 
 ```sh
+npm run test:slow
 npm run test:x-live
 VIDPOCKET_CHROME_BINARY="/path/to/Chrome for Testing" npm run test:chrome-live
+VIDPOCKET_CHROME_BINARY="/path/to/Chrome for Testing" npm run test:threads-live
 ```
 
 The Chrome Web Store archive is generated under `dist/` with `manifest.json` at the ZIP root.

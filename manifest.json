@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "VidPocket-网页视频下载",
   "short_name": "VidPocket",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "网页视频下载工具，在右上角弹窗中识别预览并保存可直接访问的 MP4/WebM 和未加密 HLS 视频。",
   "minimum_chrome_version": "109",
   "permissions": [
@@ -47,6 +47,20 @@
       ],
       "js": [
         "src/x-media-hook.js"
+      ],
+      "all_frames": false,
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.threads.com/*",
+        "https://threads.com/*",
+        "https://www.threads.net/*",
+        "https://threads.net/*"
+      ],
+      "js": [
+        "src/threads-media-hook.js"
       ],
       "all_frames": false,
       "run_at": "document_start",
