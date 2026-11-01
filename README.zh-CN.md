@@ -102,3 +102,10 @@ Chrome 商店 ZIP 会生成在 `dist/`，且 `manifest.json` 位于压缩包根�
 ## 许可证
 
 项目使用 [MIT](LICENSE) 许可证。第三方组件保留各自许可证，详见 `vendor/THIRD_PARTY_NOTICES.txt`。
+
+## 赞助支持
+
+如果这个项目对你有帮助，欢迎赞助支持，让我能持续维护和更新：
+
+- **国内用户**：[爱发电](https://afdian.com/a/bryce)（支持微信 / 支付宝）
+- **海外用户**：[GitHub Sponsors](https://github.com/sponsors/BryceYuuu)

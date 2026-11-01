@@ -117,3 +117,10 @@ tests/                 Unit, media, live API, and clean-Chrome tests
 ## License
 
 [MIT](LICENSE). Third-party components retain their respective licenses; see `vendor/THIRD_PARTY_NOTICES.txt`.
+
+## Sponsor
+
+If this project helps you, consider sponsoring to support ongoing maintenance:
+
+- [GitHub Sponsors](https://github.com/sponsors/BryceYuuu) (card / PayPal)
+- [Afdian 爱发电](https://afdian.com/a/bryce) (WeChat Pay / Alipay)
