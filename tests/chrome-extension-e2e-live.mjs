@@ -4,8 +4,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 
-const chromeBinary = process.env.VIDPOCKET_CHROME_BINARY ||
-  "/tmp/vidpocket-browser/chrome/mac_arm-151.0.7922.76/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+const chromeBinary = process.env.VIDPOCKET_CHROME_BINARY || await findChromeForTesting();
 const extensionDir = path.resolve(process.env.VIDPOCKET_EXTENSION_DIR || ".");
 const tweetId = "2084106804032872591";
 const xUrl = `https://x.com/MiniMax_AI/status/${tweetId}`;
@@ -76,10 +75,22 @@ try {
   assert.ok(xTabId >= 0, "the X tab should be visible to the extension");
   await popupClient.send("Page.navigate", { url: `${popupUrl}?tabId=${xTabId}` });
 
-  const popupState = await waitForPopupItems(popupClient, 5);
-  assert.ok(popupState.items.length >= 5, "popup should render the live X MP4 variants");
-  assert.ok(popupState.items.some((item) => item.kind === "MP4" && item.quality === "2160p"));
-  assert.ok(popupState.items.filter((item) => item.kind === "MP4").every((item) => item.imageLoaded), "all recovered MP4 rows should render their real X thumbnail");
+  const popupState = await waitForPopupItems(popupClient, 1);
+  // One post page: its video is the only row, and its renditions sit in the quality picker.
+  const picker = await evaluate(popupClient, `(() => {
+    const rows = Array.from(document.querySelectorAll(".item"));
+    const select = rows[0]?.querySelector(".variant");
+    return {
+      rows: rows.length,
+      pickerShown: Boolean(select && !select.hidden),
+      options: select ? Array.from(select.options).map((option) => option.textContent) : [],
+      status: document.getElementById("status")?.textContent.trim() || ""
+    };
+  })()`);
+  assert.equal(picker.rows, 1, `the X post page should show only that post's video, saw ${picker.rows} rows`);
+  assert.ok(picker.pickerShown && picker.options.length >= 5, `the row should offer the X renditions in a quality picker: ${JSON.stringify(picker.options)}`);
+  assert.ok(picker.options.some((label) => /^2160p MP4/.test(label)), "the 2160p MP4 rendition should be offered");
+  assert.ok(popupState.items[0].imageLoaded, "the X row should render its real thumbnail");
   const screenshot = await popupClient.send("Page.captureScreenshot", {
     format: "png",
     captureBeyondViewport: false,
@@ -88,15 +99,21 @@ try {
   const screenshotPath = path.join(runDir, "popup.png");
   await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
 
+  // Pick the smallest MP4 so the download finishes quickly.
+  await evaluate(popupClient, `(async () => {
+    const select = document.querySelector(".item .variant");
+    const mp4 = Array.from(select.options).filter((option) => / MP4/.test(option.textContent));
+    select.value = mp4[mp4.length - 1].value;
+    select.dispatchEvent(new Event("change"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  })()`);
   const clicked = await evaluate(popupClient, `(() => {
-    const rows = Array.from(document.querySelectorAll(".item"));
-    const row = rows.find((item) => item.querySelector(".kind")?.textContent.trim() === "MP4" && item.querySelector(".quality")?.textContent.trim() === "270p") ||
-      rows.find((item) => item.querySelector(".kind")?.textContent.trim() === "MP4");
+    const row = document.querySelector(".item");
     const button = row?.querySelector(".download");
     const result = {
       found: Boolean(row && button),
       disabled: Boolean(button?.disabled),
-      quality: row?.querySelector(".quality")?.textContent.trim() || "",
+      quality: row?.querySelector(".variant")?.selectedOptions[0]?.textContent || row?.querySelector(".quality")?.textContent.trim() || "",
       name: row?.querySelector(".name")?.textContent.trim() || "",
       buttonText: button?.textContent.trim() || ""
     };
@@ -130,6 +147,7 @@ try {
     cleanProfile: true,
     extensionId,
     page: xUrl,
+    picker,
     screenshot: screenshotPath,
     popupStatus: popupState.status,
     detectedItems: popupState.items,
@@ -153,6 +171,16 @@ try {
     delay(3000)
   ]);
   if (chrome.exitCode === null) chrome.kill("SIGKILL");
+  // Headless Chrome leaves large scoped_dir caches in its profile; always delete it.
+  await rm(profileDir, { recursive: true, force: true }).catch(() => {});
+}
+
+// Newest Chrome for Testing installed by `npx @puppeteer/browsers install chrome@stable --path /tmp/vidpocket-browser`.
+async function findChromeForTesting() {
+  const base = "/tmp/vidpocket-browser/chrome";
+  const builds = (await readdir(base).catch(() => [])).filter((name) => name.startsWith("mac_arm-")).sort().reverse();
+  if (!builds.length) throw new Error(`Chrome for Testing not found under ${base}; set VIDPOCKET_CHROME_BINARY`);
+  return path.join(base, builds[0], "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
 }
 
 async function makeRunDirectory() {

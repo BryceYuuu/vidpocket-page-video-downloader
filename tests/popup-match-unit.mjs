@@ -200,11 +200,11 @@ const displayItems = api.prepareDisplayItems([
     label: "@courtside · Every court for the new season",
     mediaId: "4007130374095024395",
     pageUrl: "https://www.threads.com/@courtside/post/DecL9g0nLEL",
-    primary: true,
+    postId: "DecL9g0nLEL",
     downloadable: true,
     probeStatus: "done"
   }
-]);
+], "https://www.threads.com/@courtside/post/DecL9g0nLEL");
 
 const firstHls = displayItems.find((item) => item.id === "hls-1");
 const secondHls = displayItems.find((item) => item.id === "hls-2");
@@ -234,6 +234,49 @@ const threadsRows = displayItems.filter((item) => item.url.includes("cdninstagra
 assert(threadsRows.length === 1, "Threads renditions of one post video should be displayed once");
 assert(threadsRows[0].quality === "1080p", "the highest Threads rendition should be kept");
 assert(displayItems[0].url.includes("cdninstagram.com"), "the primary post video should be listed first");
+
+// X post page: one video seen as HLS plus three MP4 renditions, next to a timeline video.
+const xPage = "https://x.com/someone/status/2084106804032872591";
+const xVariant = (id, path, quality, kind = "video") => ({
+  id,
+  url: `https://video.twimg.com/amplify_video/2084105994301501440/${path}`,
+  kind,
+  quality,
+  duration: 13,
+  thumbnail: "https://pbs.twimg.com/amplify_video_thumb/2084105994301501440/img/a.jpg",
+  label: "Robot dog climbs Mount Tai",
+  postId: "2084106804032872591",
+  downloadable: kind !== "hls",
+  probeStatus: "done"
+});
+const xItems = api.prepareDisplayItems([
+  xVariant("x-hls", "pl/master.m3u8", "1080p", "hls"),
+  xVariant("x-1080", "vid/avc1/1080x1920/a.mp4", "1080p"),
+  xVariant("x-720", "vid/avc1/720x1280/b.mp4", "720p"),
+  xVariant("x-320", "vid/avc1/320x568/c.mp4", "320p"),
+  {
+    id: "timeline",
+    url: "https://video.twimg.com/ext_tw_video/1999999999999999999/pu/vid/avc1/1280x720/t.mp4",
+    kind: "video",
+    quality: "2160p",
+    thumbnail: "https://pbs.twimg.com/ext_tw_video_thumb/1999999999999999999/pu/img/t.jpg",
+    label: "Another post from the timeline",
+    postId: "1999999999999999999",
+    downloadable: true,
+    probeStatus: "done"
+  }
+], xPage);
+assert(xItems.length === 2, "renditions of one X video collapse into a single row");
+const xRow = xItems.find((item) => item.groupKey === "x:amplify_video:2084105994301501440");
+assert(xRow && xRow.variants.length === 4, "the row keeps every rendition for the quality picker");
+assert(xRow.id === "x-1080", "the default rendition is the highest-quality direct MP4");
+assert(xRow.primary === true && xItems[0] === xRow, "the viewed post's video is marked and listed first, even above a 2160p timeline video");
+const focused = api.focusItems(xItems);
+assert(focused.length === 1 && focused[0] === xRow, "on a single-post page only that post's videos are shown by default");
+assert(api.focusItems(xItems.filter((item) => !item.primary)).length === 1, "without a match for the current post, everything stays visible");
+assert(api.currentPostId(xPage) === "2084106804032872591");
+assert(api.currentPostId("https://www.threads.net/@a/post/AbC_1-x") === "AbC_1-x");
+assert(api.currentPostId("https://x.com/home") === "", "timelines are not single-post pages");
 assert(/^@courtside · Every court/.test(threadsRows[0].displayTitle), "Threads rows should use the post author and caption as title");
 
 console.log(JSON.stringify({
@@ -246,7 +289,9 @@ console.log(JSON.stringify({
     "Generated HLS thumbnails remain URL-specific",
     "opening an exact X status triggers a background media scan independent of page DOM",
     "the same X asset and resolution is deduplicated across page and background discovery",
-    "Threads renditions collapse to the best one per media id with the post caption as title"
+    "Threads renditions collapse to the best one per media id with the post caption as title",
+    "X renditions of one video share a row with a quality picker defaulting to the best MP4",
+    "single-post pages show only that post's videos until expanded"
   ]
 }, null, 2));
 

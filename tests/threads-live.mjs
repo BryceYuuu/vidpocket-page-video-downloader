@@ -6,8 +6,7 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 
-const chromeBinary = process.env.VIDPOCKET_CHROME_BINARY ||
-  "/tmp/vidpocket-browser/chrome/mac_arm-155.0.8059.84/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+const chromeBinary = process.env.VIDPOCKET_CHROME_BINARY || await findChromeForTesting();
 const threadsUrl = process.env.VIDPOCKET_THREADS_URL || "https://www.threads.com/@wnba/post/Des5YAOjj2d";
 const expectAudio = process.env.VIDPOCKET_THREADS_EXPECT_AUDIO !== "0";
 const runDir = path.join(os.tmpdir(), `vidpocket-threads-live-${process.pid}`);
@@ -88,6 +87,23 @@ try {
   if (postAuthor) {
     assert.ok(popupState.items[0].name.startsWith(`@${postAuthor} `), "the viewed post's own video should be listed first");
   }
+  // A single-post page shows only that post's video until the user expands the list.
+  const focus = await evaluate(popupClient, `(() => {
+    const button = document.getElementById("show-others");
+    return { rows: document.querySelectorAll(".item").length, buttonShown: Boolean(button && !button.hidden), buttonText: button ? button.textContent : "", status: document.getElementById("status").textContent };
+  })()`);
+  assert.equal(focus.rows, 1, `a single-post page should show only that post's video, saw ${focus.rows}`);
+  if (focus.buttonShown) {
+    const expanded = await evaluate(popupClient, `(async () => {
+      document.getElementById("show-others").click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const rows = Array.from(document.querySelectorAll(".item"));
+      return { rows: rows.length, first: rows[0].querySelector(".name").textContent.trim(), buttonText: document.getElementById("show-others").textContent };
+    })()`);
+    assert.ok(expanded.rows > 1, "expanding shows the other videos on the page");
+    assert.equal(expanded.first, popupState.items[0].name, "the viewed post's video stays first after expanding");
+    focus.expanded = expanded;
+  }
   const screenshot = await popupClient.send("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: 486, height: 600, scale: 1 } });
   const screenshotPath = path.join(runDir, "popup.png");
   await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
@@ -150,6 +166,7 @@ try {
     screenshot: screenshotPath,
     popupStatus: popupState.status,
     detectedItems: popupState.items,
+    focusMode: focus,
     lazyPreviews: lazy,
     rowReuse: reuse,
     downloaded: { filename: path.basename(savedFile), bytes: savedStat.size, streams, chromeDownload }
@@ -164,6 +181,8 @@ try {
   chrome.kill("SIGTERM");
   await Promise.race([new Promise((resolve) => chrome.once("exit", resolve)), delay(3000)]);
   if (chrome.exitCode === null) chrome.kill("SIGKILL");
+  // Headless Chrome leaves large scoped_dir caches in its profile; always delete it.
+  await rm(profileDir, { recursive: true, force: true }).catch(() => {});
 }
 
 // Chrome cannot load unpacked content scripts from a non-ASCII folder (e.g. "视频下载"); stage a copy.
@@ -174,6 +193,14 @@ async function stageExtension(sourceDir) {
     await cp(path.join(sourceDir, entry), path.join(stagedDir, entry), { recursive: true });
   }
   return stagedDir;
+}
+
+// Newest Chrome for Testing installed by `npx @puppeteer/browsers install chrome@stable --path /tmp/vidpocket-browser`.
+async function findChromeForTesting() {
+  const base = "/tmp/vidpocket-browser/chrome";
+  const builds = (await readdir(base).catch(() => [])).filter((name) => name.startsWith("mac_arm-")).sort().reverse();
+  if (!builds.length) throw new Error(`Chrome for Testing not found under ${base}; set VIDPOCKET_CHROME_BINARY`);
+  return path.join(base, builds[0], "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing");
 }
 
 function probeStreams(file) {

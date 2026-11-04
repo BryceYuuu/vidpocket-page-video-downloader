@@ -155,9 +155,9 @@ assert.equal(candidate.mediaId, "4007130374095024395", "post media id beats the 
 assert.equal(candidate.thumbnail, coverUrl);
 assert.equal(candidate.contentType, "video/mp4");
 assert.ok(candidate.source.includes("page-api") && candidate.source.includes("dom"));
-assert.equal(candidate.primary, true, "the video of the post in the URL is marked primary");
+assert.equal(candidate.postId, "DecL9g0nLEL", "the owning post shortcode reaches the background");
 const reply = payload.candidates.find((item) => item.url.includes("reply.mp4"));
-assert.equal(reply.primary, false, "videos from other posts on the page are not primary");
+assert.equal(reply.postId, "ReplyCode", "videos from other posts keep their own post shortcode");
 
 const untrustedCover = payload.candidates.find((item) => item.url === "https://scontent.cdninstagram.com/o1/v/clip.mp4");
 assert.ok(untrustedCover, "Meta CDN video without metadata is still relayed");

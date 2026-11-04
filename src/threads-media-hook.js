@@ -9,6 +9,7 @@
   const MAX_CANDIDATES = 120;
   const MEDIA_KEYWORD_RE = /video_versions|playable_url|video_url/i;
   const candidateCache = new Map();
+  const seenPaths = new Map();
   let existingScanTimer = 0;
 
   function extractThreadsMediaCandidates(payload, options = {}) {
@@ -292,11 +293,16 @@
   function ingestPayload(payload, options) {
     const extracted = extractThreadsMediaCandidates(payload, options);
     const changed = [];
+    const path = currentPath();
     extracted.forEach((candidate) => {
       const previous = candidateCache.get(candidate.url);
       const merged = previous ? mergeCandidate(previous, candidate) : candidate;
       candidateCache.set(candidate.url, merged);
-      if (!previous || JSON.stringify(previous) !== JSON.stringify(merged)) changed.push(merged);
+      const paths = seenPaths.get(candidate.url) || new Set();
+      const firstSeenHere = !paths.has(path);
+      paths.add(path);
+      seenPaths.set(candidate.url, paths);
+      if (!previous || firstSeenHere || JSON.stringify(previous) !== JSON.stringify(merged)) changed.push(merged);
     });
     if (changed.length) emitCandidates(changed);
     return extracted;
@@ -397,7 +403,26 @@
       ingestText(String(script.textContent || ""));
     });
 
-    if (candidateCache.size) emitCandidates(Array.from(candidateCache.values()));
+    const relevant = relevantCandidates();
+    if (relevant.length) emitCandidates(relevant);
+  }
+
+  // Threads is a single-page app: keep everything seen this session (a post opened from the feed
+  // may not refetch its data), but a rescan only reports what belongs to the current page.
+  function relevantCandidates() {
+    const path = currentPath();
+    const postCode = (/\/post\/([A-Za-z0-9_-]+)/.exec(path) || [])[1] || "";
+    return Array.from(candidateCache.values()).filter((candidate) =>
+      (seenPaths.get(candidate.url) || new Set()).has(path) || (postCode && candidate.postCode === postCode)
+    );
+  }
+
+  function currentPath() {
+    try {
+      return String(root.location && root.location.pathname || "");
+    } catch {
+      return "";
+    }
   }
 
   if (root[TEST_MODE]) {

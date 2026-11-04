@@ -29,10 +29,10 @@ npm test
 
 ```sh
 npm run package:store
-unzip -t dist/vidpocket-0.5.2.zip
+unzip -t dist/vidpocket-0.5.3.zip
 ```
 
-上传 `dist/vidpocket-0.5.2.zip`。不要再次压缩外层目录，`manifest.json` 必须位于 ZIP 根目录。
+上传 `dist/vidpocket-0.5.3.zip`。不要再次压缩外层目录，`manifest.json` 必须位于 ZIP 根目录。
 
 ## 常见问题
 

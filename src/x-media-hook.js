@@ -7,6 +7,7 @@
   const TEST_API = "__vidPocketXMediaHookTestApi";
   const MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
   const candidateCache = new Map();
+  const seenPaths = new Map();
   let existingScanTimer = 0;
   let lastExistingScan = 0;
 
@@ -69,7 +70,8 @@
       duration: 0,
       width: 0,
       height: 0,
-      mediaId: ""
+      mediaId: "",
+      postId: ""
     };
   }
 
@@ -105,8 +107,21 @@
       duration: duration || inherited.duration || 0,
       width: positiveDimension(value.width || value.w || originalInfo.width || originalInfo.w) || inherited.width || 0,
       height: positiveDimension(value.height || value.h || originalInfo.height || originalInfo.h) || inherited.height || 0,
-      mediaId: firstText([value.media_key, value.mediaKey, value.id_str, value.id, inherited.mediaId], 100)
+      mediaId: firstText([value.media_key, value.mediaKey, value.id_str, value.id, inherited.mediaId], 100),
+      // Id of the tweet that owns the media (quoted tweets get their own id), as in /status/<id>.
+      postId: firstText([tweetIdOf(value), inherited.postId], 40)
     };
+  }
+
+  function tweetIdOf(value) {
+    const legacy = objectValue(value.legacy);
+    if (legacy && ("full_text" in legacy || "conversation_id_str" in legacy)) {
+      return /^\d{6,40}$/.test(String(value.rest_id || "")) ? String(value.rest_id) : String(legacy.id_str || "");
+    }
+    if ("full_text" in value || "conversation_id_str" in value) {
+      return /^\d{6,40}$/.test(String(value.id_str || "")) ? String(value.id_str) : "";
+    }
+    return "";
   }
 
   function collectVariants(value, context, results) {
@@ -170,6 +185,7 @@
       format: isHls ? "HLS" : "MP4",
       thumbnail: sanitizeXImageUrl(context.thumbnail),
       mediaId: String(context.mediaId || ""),
+      postId: String(context.postId || ""),
       bitrate: Number(context.bitrate) || 0
     };
     const existing = results.get(url);
@@ -187,6 +203,7 @@
       height: next.height || existing.height || 0,
       quality: next.quality || existing.quality || "",
       mediaId: next.mediaId || existing.mediaId || "",
+      postId: next.postId || existing.postId || "",
       bitrate: next.bitrate || existing.bitrate || 0
     };
   }
@@ -289,11 +306,16 @@
   function ingestPayload(payload, options) {
     const extracted = extractXMediaCandidates(payload, options);
     const changed = [];
+    const path = currentPath();
     extracted.forEach((candidate) => {
       const previous = candidateCache.get(candidate.url);
       const merged = previous ? mergeCandidate(previous, candidate) : candidate;
       candidateCache.set(candidate.url, merged);
-      if (!previous || JSON.stringify(previous) !== JSON.stringify(merged)) {
+      const paths = seenPaths.get(candidate.url) || new Set();
+      const firstSeenHere = !paths.has(path);
+      paths.add(path);
+      seenPaths.set(candidate.url, paths);
+      if (!previous || firstSeenHere || JSON.stringify(previous) !== JSON.stringify(merged)) {
         changed.push(merged);
       }
     });
@@ -452,8 +474,27 @@
       });
     });
 
-    if (candidateCache.size) {
-      emitCandidates(Array.from(candidateCache.values()));
+    const relevant = relevantCandidates();
+    if (relevant.length) {
+      emitCandidates(relevant);
+    }
+  }
+
+  // X is a single-page app: the cache keeps every video seen this session (a post opened from the
+  // timeline may not refetch its data), but a rescan only reports what belongs to the current page.
+  function relevantCandidates() {
+    const path = currentPath();
+    const postId = (/\/status\/(\d{6,40})/.exec(path) || [])[1] || "";
+    return Array.from(candidateCache.values()).filter((candidate) =>
+      (seenPaths.get(candidate.url) || new Set()).has(path) || (postId && candidate.postId === postId)
+    );
+  }
+
+  function currentPath() {
+    try {
+      return String(root.location && root.location.pathname || "");
+    } catch {
+      return "";
     }
   }
 

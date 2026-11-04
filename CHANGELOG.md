@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.3
+
+- On a single-post page (X `/status/...`, Threads `/post/...`), the popup shows only that post's videos; a "show the other N videos" button expands the list, with the viewed post's videos kept first.
+- X videos now carry the id of the tweet that owns them (quoted tweets keep their own id), so the viewed post is recognised on X as well as Threads.
+- Renditions of one video share a single row with a quality picker; the default is the highest-quality direct MP4.
+- Moving to another page inside X or Threads (no full reload) starts the list over instead of accumulating every video seen during the session; videos of the opened post are still found when the site does not refetch them.
+- Live tests delete their headless Chrome profile when they finish and locate the newest installed Chrome for Testing automatically.
+
 ## 0.5.2
 
 - Added Threads video support on `threads.com` and `threads.net`. A packaged page hook now loads at document start and reads the post data Threads already sends to the page (embedded JSON and GraphQL responses), including `for (;;);`-prefixed and newline-delimited responses. Media is accepted only from Meta's `cdninstagram.com` / `fbcdn.net` CDNs.

@@ -29,10 +29,10 @@ After changing extension files, click Reload on the VidPocket card in `chrome://
 
 ```sh
 npm run package:store
-unzip -t dist/vidpocket-0.5.2.zip
+unzip -t dist/vidpocket-0.5.3.zip
 ```
 
-Upload `dist/vidpocket-0.5.2.zip`. Do not zip its containing folder again; `manifest.json` must be at the archive root.
+Upload `dist/vidpocket-0.5.3.zip`. Do not zip its containing folder again; `manifest.json` must be at the archive root.
 
 ## Troubleshooting
 

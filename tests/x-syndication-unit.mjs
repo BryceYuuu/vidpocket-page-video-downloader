@@ -110,6 +110,7 @@ assert.equal(ultraHd.duration, 41.513);
 assert.equal(ultraHd.thumbnail, preview);
 assert.equal(ultraHd.label, "MiniMax-H3 Is Now Publicly Available");
 assert.ok(items.every((item) => !item.url.includes("evil.example")), "non-X media hosts must be rejected");
+assert.ok(items.every((item) => item.postId === tweetId), "recovered variants carry the id of the post they belong to");
 
 const endpoint = requestedUrls.find((url) => url.startsWith("https://cdn.syndication.twimg.com/tweet-result"));
 assert.ok(endpoint, "the background should query X's public syndication endpoint");

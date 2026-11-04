@@ -6,9 +6,15 @@ const emptyEl = document.getElementById("empty");
 const refreshButton = document.getElementById("refresh");
 const clearButton = document.getElementById("clear");
 const template = document.getElementById("item-template");
+const showOthersButton = document.getElementById("show-others");
 
 let activeTab = null;
 let currentItems = [];
+let lastRawItems = [];
+// On a single-post page only that post's videos are shown until the user asks for the rest.
+let showOtherMedia = false;
+// Quality picked per video (group key -> candidate id).
+const variantChoice = new Map();
 let currentJobs = [];
 let currentXScan = null;
 let jobPollTimer = 0;
@@ -20,6 +26,13 @@ const thumbnailCache = new Map();
 document.addEventListener("DOMContentLoaded", init);
 refreshButton.addEventListener("click", refresh);
 clearButton.addEventListener("click", clearCurrentTab);
+if (showOthersButton) {
+  showOthersButton.addEventListener("click", () => {
+    showOtherMedia = !showOtherMedia;
+    render(currentItems);
+    updateHeaderStatus(lastRawItems);
+  });
+}
 window.addEventListener("pagehide", () => clearTimeout(jobPollTimer));
 
 async function init() {
@@ -115,6 +128,7 @@ async function loadState(pollCount = 0, options = {}) {
     : [];
   currentXScan = candidateResponse && candidateResponse.ok ? candidateResponse.xScan || null : currentXScan;
   currentJobs = jobResponse && jobResponse.ok && Array.isArray(jobResponse.jobs) ? jobResponse.jobs : currentJobs;
+  lastRawItems = rawItems;
   currentItems = prepareDisplayItems(rawItems);
   render(currentItems);
   updateHeaderStatus(rawItems);
@@ -138,8 +152,18 @@ function updateHeaderStatus(rawItems) {
     return;
   }
   if (currentItems.length) {
-    const previewCount = currentItems.filter((item) => item.thumbnail || canPreviewVideo(item)).length;
-    setStatus(`发现 ${currentItems.length} 个媒体资源；${previewCount} 个有预览`);
+    const focused = focusItems(currentItems);
+    const others = currentItems.length - focused.length;
+    if (others > 0) {
+      setStatus(`当前帖子 ${focused.length} 个视频；页面上还有 ${others} 个`);
+      return;
+    }
+    const primaryCount = currentItems.filter((item) => item.primary).length;
+    if (primaryCount && showOtherMedia) {
+      setStatus(`共 ${currentItems.length} 个视频；当前帖子的 ${primaryCount} 个排在最前`);
+      return;
+    }
+    setStatus(`发现 ${currentItems.length} 个视频`);
     return;
   }
   if (isXTab(activeTab) && currentXScan && currentXScan.status === "error") {
@@ -171,9 +195,32 @@ const previewObserver = typeof IntersectionObserver === "function"
   ? new IntersectionObserver(handlePreviewVisibility, { rootMargin: "240px 0px" })
   : null;
 
-function render(items) {
+// On a single-post page, show only that post's videos (when any were found) unless expanded.
+function focusItems(items) {
+  if (showOtherMedia) return items;
+  const primary = items.filter((item) => item.primary);
+  return primary.length ? primary : items;
+}
+
+function updateShowOthersButton(allItems) {
+  if (!showOthersButton) return;
+  const primaryCount = allItems.filter((item) => item.primary).length;
+  const others = allItems.length - primaryCount;
+  showOthersButton.hidden = !primaryCount || others <= 0;
+  showOthersButton.textContent = showOtherMedia
+    ? "只看当前帖子"
+    : `显示页面上其他 ${others} 个视频`;
+}
+
+function rowKey(item) {
+  return item.groupKey || item.id;
+}
+
+function render(allItems) {
+  const items = focusItems(allItems);
+  updateShowOthersButton(allItems);
   emptyEl.hidden = items.length > 0;
-  const liveIds = new Set(items.map((item) => item.id));
+  const liveIds = new Set(items.map(rowKey));
   rowsById.forEach((row, id) => {
     if (!liveIds.has(id)) {
       if (previewObserver) previewObserver.unobserve(row.refs.thumbEl);
@@ -183,7 +230,7 @@ function render(items) {
   });
 
   items.forEach((item, index) => {
-    const row = rowsById.get(item.id) || createRow(item);
+    const row = rowsById.get(rowKey(item)) || createRow(item);
     row.item = item;
     updateRow(row, item, jobForItem(item), index < EAGER_PREVIEW_ROWS);
     const current = itemsEl.children[index];
@@ -241,7 +288,16 @@ function createRow(item) {
   });
   refs.thumbImg.addEventListener("error", () => refs.thumbImg.removeAttribute("src"));
 
-  rowsById.set(item.id, row);
+  refs.variantSelect = node.querySelector(".variant");
+  if (refs.variantSelect) {
+    refs.variantSelect.addEventListener("change", () => {
+      variantChoice.set(rowKey(row.item), refs.variantSelect.value);
+      currentItems = prepareDisplayItems(lastRawItems);
+      render(currentItems);
+    });
+  }
+
+  rowsById.set(rowKey(item), row);
   return row;
 }
 
@@ -260,12 +316,41 @@ function updateRow(row, item, job, eagerPreview) {
   refs.nameEl.title = item.url;
   setText(refs.formatEl, item.kind === "hls" ? "MP4" : (item.format || formatFromUrl(item.url)));
   setText(refs.qualityEl, item.quality || "");
-  refs.qualityEl.hidden = !item.quality;
+  const variants = Array.isArray(item.variants) ? item.variants : [];
+  const pickable = Boolean(refs.variantSelect) && variants.length > 1;
+  if (refs.variantSelect) {
+    refs.variantSelect.hidden = !pickable;
+    if (pickable) renderVariantOptions(refs.variantSelect, item);
+  }
+  // With a quality picker the format and quality pills would repeat the selected option.
+  refs.formatEl.hidden = pickable;
+  refs.qualityEl.hidden = pickable || !item.quality;
   refs.qualityEl.classList.toggle("high", isHighQuality(item.quality));
   setText(refs.sourceEl, sourceLabel(item.source));
   setText(refs.detailsEl, detailLine(item, job));
   refs.detailsEl.title = item.url;
   configureDownloadControls(row, item, job);
+}
+
+function renderVariantOptions(select, item) {
+  const signature = item.variants.map((variant) => `${variant.id}|${variantLabel(variant)}`).join("\n");
+  if (select.vidpocketSignature !== signature) {
+    select.vidpocketSignature = signature;
+    select.textContent = "";
+    item.variants.forEach((variant) => {
+      const option = document.createElement("option");
+      option.value = variant.id;
+      option.textContent = variantLabel(variant);
+      select.appendChild(option);
+    });
+  }
+  if (select.value !== item.id) select.value = item.id;
+}
+
+function variantLabel(item) {
+  const format = item.kind === "hls" ? "HLS" : (item.format || formatFromUrl(item.url) || "MP4");
+  const size = item.contentLength ? ` · ${formatBytes(item.contentLength)}` : "";
+  return `${item.quality || "原画"} ${format}${size}`;
 }
 
 function setText(element, value) {
@@ -489,14 +574,88 @@ function pumpThumbnailQueue() {
 async function reloadCandidatesOnly() {
   const response = await sendRuntimeMessage({ type: "getCandidates", tabId: activeTab.id });
   if (response && response.ok && Array.isArray(response.items)) {
+    lastRawItems = response.items;
     currentItems = prepareDisplayItems(response.items);
     render(currentItems);
     updateHeaderStatus(response.items);
   }
 }
 
-function prepareDisplayItems(items) {
-  return annotateDisplayItems(sortItems(dedupeItems(items).map(applyCachedThumbnail).filter(isDisplayableDownload)));
+function prepareDisplayItems(items, pageUrl = activeTab && activeTab.url) {
+  const postId = currentPostId(pageUrl);
+  const displayable = dedupeItems(items).map(applyCachedThumbnail).filter(isDisplayableDownload);
+  return annotateDisplayItems(sortItems(groupVariants(displayable, postId)));
+}
+
+// Id of the single post being viewed: an X status id or a Threads post shortcode.
+function currentPostId(pageUrl) {
+  try {
+    const url = new URL(pageUrl || "");
+    const host = url.hostname.toLowerCase();
+    if (/(^|\.)(?:x\.com|twitter\.com)$/.test(host)) return (/\/status\/(\d{6,40})/.exec(url.pathname) || [])[1] || "";
+    if (/(^|\.)threads\.(?:com|net)$/.test(host)) return (/\/post\/([A-Za-z0-9_-]+)/.exec(url.pathname) || [])[1] || "";
+  } catch {}
+  return "";
+}
+
+// One row per video: renditions of the same asset share a group and the row offers a quality picker.
+function groupVariants(items, postId) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const key = groupKeyFor(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return Array.from(groups.entries()).map(([groupKey, members]) => {
+    const variants = [...members].sort(compareVariants);
+    const chosen = chooseVariant(groupKey, variants);
+    const merged = variants.find((variant) => variant.thumbnail) || chosen;
+    return {
+      ...chosen,
+      label: usefulDisplayLabel(chosen.label, ...variants.map((variant) => variant.label)),
+      thumbnail: chosen.thumbnail || merged.thumbnail || "",
+      duration: chosen.duration || Math.max(0, ...variants.map((variant) => Number(variant.duration) || 0)),
+      groupKey,
+      variants,
+      primary: Boolean(postId) && variants.some((variant) => variant.postId === postId)
+    };
+  });
+}
+
+function groupKeyFor(item) {
+  try {
+    const url = new URL(item.url);
+    if (url.hostname.toLowerCase() === "video.twimg.com") {
+      const path = decodeURIComponentSafe(url.pathname);
+      const numbered = /\/(amplify_video|ext_tw_video)\/(\d+)/i.exec(path);
+      const gif = /\/tweet_video\/([^/.]+)/i.exec(path);
+      if (numbered) return `x:${numbered[1].toLowerCase()}:${numbered[2]}`;
+      if (gif) return `x:tweet_video:${gif[1]}`;
+    }
+    if (isMetaCdnHost(url.hostname) && item.mediaId && !/^media-\d+$/.test(item.mediaId)) {
+      return `threads:${item.mediaId}`;
+    }
+  } catch {}
+  return canonicalDisplayKey(item);
+}
+
+// Best first: higher resolution, then a direct MP4 before HLS (direct files save faster).
+function compareVariants(a, b) {
+  const qualityDelta = qualityHeight(b.quality) - qualityHeight(a.quality);
+  if (qualityDelta) return qualityDelta;
+  const kindDelta = Number(a.kind === "hls") - Number(b.kind === "hls");
+  if (kindDelta) return kindDelta;
+  return itemScore(b) - itemScore(a);
+}
+
+function chooseVariant(groupKey, variants) {
+  const active = variants.find((variant) => {
+    const job = jobForItem(variant);
+    return job && ACTIVE_JOB_STATES.has(job.status);
+  });
+  if (active) return active;
+  const picked = variants.find((variant) => variant.id === variantChoice.get(groupKey));
+  return picked || variants[0];
 }
 
 function dedupeItems(items) {
@@ -520,7 +679,7 @@ function dedupeItems(items) {
       width: preferred.width || fallback.width || 0,
       height: preferred.height || fallback.height || 0,
       quality: preferred.quality || fallback.quality || "",
-      primary: Boolean(preferred.primary || fallback.primary)
+      postId: preferred.postId || fallback.postId || ""
     });
   });
   return Array.from(byUrl.values());
@@ -962,6 +1121,8 @@ if (typeof globalThis !== "undefined") {
     infoPlaceholder,
     xTweetIdFromUrl,
     requestActiveXStatusScan,
-    previewImageUrl
+    previewImageUrl,
+    focusItems,
+    currentPostId
   };
 }

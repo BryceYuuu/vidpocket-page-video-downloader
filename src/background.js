@@ -101,6 +101,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: false, error: "Missing tab" };
       }
       const state = getTabState(tabId);
+      // The top frame moved to a new path inside a single-page app: start this tab's list over.
+      if (message.pageChanged === true && sender.frameId === 0) {
+        state.items.clear();
+        state.xScan = null;
+      }
       state.context = {
         pageUrl: message.pageUrl || sender.tab.url || "",
         pageTitle: message.pageTitle || sender.tab.title || "",
@@ -372,7 +377,8 @@ function extractXSyndicationCandidates(payload, tweetId) {
     duration: 0,
     width: 0,
     height: 0,
-    mediaId: tweetId
+    mediaId: tweetId,
+    postId: tweetId
   }, 0);
   return Array.from(results.values());
 
@@ -421,7 +427,9 @@ function extractXSyndicationCandidates(payload, tweetId) {
       duration: duration || inherited.duration || 0,
       width: xSafeDimension(value.width || value.w || originalInfo.width || originalInfo.w) || inherited.width || 0,
       height: xSafeDimension(value.height || value.h || originalInfo.height || originalInfo.h) || inherited.height || 0,
-      mediaId: firstNonEmptyText([value.media_key, value.mediaKey, value.id_str, value.id, inherited.mediaId], 100)
+      mediaId: firstNonEmptyText([value.media_key, value.mediaKey, value.id_str, value.id, inherited.mediaId], 100),
+      // A quoted tweet inside the payload owns its own media.
+      postId: /^\d{6,40}$/.test(String(value.id_str || "")) && typeof value.text === "string" ? String(value.id_str) : inherited.postId
     };
 
     const variantArrays = [];
@@ -471,6 +479,7 @@ function addXSyndicationVariant(results, rawUrl, context) {
     format: isHls ? "HLS" : "MP4",
     thumbnail: sanitizeXSyndicationImageUrl(context.thumbnail),
     mediaId: String(context.mediaId || ""),
+    postId: String(context.postId || ""),
     bitrate: Number(context.bitrate) || 0
   };
   const existing = results.get(url);
@@ -1151,7 +1160,7 @@ function addCandidate(tabId, rawCandidate) {
     previewStatus: rawCandidate.previewStatus || (existing && existing.previewStatus) || "",
     previewError: rawCandidate.previewError || (existing && existing.previewError) || "",
     mediaId: rawCandidate.mediaId || (existing && existing.mediaId) || "",
-    primary: Boolean(rawCandidate.primary || (existing && existing.primary)),
+    postId: rawCandidate.postId || (existing && existing.postId) || "",
     requiresProbe: forceProbe,
     downloadable,
     probeStatus: needsProbe ? "checking" : ((downloadable || !DIRECT_DOWNLOAD_KINDS.has(kind)) ? "done" : "blocked"),

@@ -6,20 +6,19 @@
 
 ## 最新版本
 
-**当前稳定版本：[v0.5.2](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.2)**
+**当前稳定版本：[v0.5.3](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.3)**
 
 - **推荐安装位置：** [Chrome 应用商店](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii)
 - **最新安装包与源码：** [GitHub Releases](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/latest)
 - **完整版本更新记录：** [CHANGELOG.md](CHANGELOG.md)
 
-### v0.5.2 更新内容
+### v0.5.3 更新内容
 
-- 新增 Threads 视频支持（`threads.com` 和 `threads.net`）：以「作者 · 帖子文字」作为标题，显示真实封面、时长和清晰度，当前帖子的视频排在最前；保存的是带音频的完整 MP4。
-- 修复自 0.5.0 起存在的识别问题：网页中只要有 `<video>` 元素，页面视频就可能无法显示在弹窗中。
-- 不再把 DASH 分段当作完整视频提供下载，避免保存到无声或不完整的文件。
-- 弹窗更快：列表几乎立即出现，封面图约小 8 倍，下载进度刷新时不再重复加载封面，未滚动到的预览延后加载。
-- 带独立音轨的 HLS 视频，画面和声音同时下载。
-- Chrome 挂起扩展后台进程后，已识别的列表不会丢失。
+- 在 X 或 Threads 的单条帖子页打开插件，只显示这条帖子的视频；点「显示页面上其他视频」可展开，当前帖子始终排在最前。
+- 一个视频只占一行，不同清晰度和格式放进下拉框选择，默认选最高清的直接 MP4。
+- 在 X 或 Threads 里浏览时，不再把一路刷过的视频全部堆进列表；点进另一条帖子会重新开始统计。
+
+v0.5.2（新增 Threads 支持、弹窗提速）及更早版本见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -28,6 +27,7 @@
 - 在可获取时显示匹配的预览图、时长、格式、分辨率、来源和易读标题。
 - 当 X 播放器只暴露临时 `blob:` 地址时，恢复公开帖子的多个视频清晰度。
 - 识别 Threads 视频，显示作者、帖子文字、封面和时长，并保存带音频的完整 MP4。
+- 在 X 或 Threads 单条帖子页只显示当前帖子的视频；每个视频一行，用下拉框选清晰度。
 - 直接文件通过 Chrome 原生下载 API 保存。
 - 受支持的未加密 HLS/m3u8 在扩展安装包内处理，并生成 MP4。
 - 插件弹窗关闭后，用户主动发起的任务仍可在扩展本地存储中保留进度。

@@ -41,6 +41,10 @@ let lastXTweetIdPayload = "";
 let nextMediaId = 1;
 const mediaIds = new WeakMap();
 const pageApiCandidates = new Map();
+// Single-page apps (X, Threads) change the path without reloading; results are scoped to the path.
+let currentPath = location.pathname;
+let performanceStart = 0;
+let pageChangePending = false;
 
 window.addEventListener("message", handlePageMediaMessage);
 
@@ -52,12 +56,14 @@ requestXSyndicationScan(true).catch(() => {});
 document.addEventListener("loadedmetadata", scanSoon, true);
 document.addEventListener("loadeddata", scanSoon, true);
 document.addEventListener("play", scanSoon, true);
+window.addEventListener("popstate", scanSoon);
 
 const observer = new MutationObserver(scanSoon);
 observeDocument();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "scanNow") {
+    checkPageChange();
     requestXMediaScan();
     requestThreadsMediaScan();
     const candidates = scan();
@@ -77,6 +83,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 function scanSoon() {
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
+    checkPageChange();
     sendCandidates(scan(), false);
     requestXSyndicationScan(false).catch(() => {});
   }, 250);
@@ -97,7 +104,7 @@ function scan() {
     collectLinkedElement(candidates, element);
   });
 
-  performance.getEntriesByType("resource").forEach((entry) => {
+  performance.getEntriesByType("resource").slice(performanceStart).forEach((entry) => {
     if (!entry || typeof entry.name !== "string") {
       return;
     }
@@ -202,8 +209,25 @@ function addCandidate(map, url, details) {
     mediaId: preferred.mediaId || fallback.mediaId || "",
     contentType: details.contentType || existing.contentType || "",
     bitrate: details.bitrate || existing.bitrate || 0,
-    primary: Boolean(details.primary || existing.primary)
+    postId: preferred.postId || fallback.postId || ""
   });
+}
+
+// When the top page moves to a new path, drop media gathered on the previous path and let the
+// background reset the tab; the page hooks then report only what belongs to the new page.
+function checkPageChange() {
+  if ((window.top && window.top !== window) || location.pathname === currentPath) {
+    return false;
+  }
+  currentPath = location.pathname;
+  pageApiCandidates.clear();
+  lastPayload = "";
+  lastXTweetIdPayload = "";
+  performanceStart = performance.getEntriesByType("resource").length;
+  pageChangePending = true;
+  requestXMediaScan();
+  requestThreadsMediaScan();
+  return true;
 }
 
 function observeDocument() {
@@ -309,6 +333,7 @@ function handlePageMediaMessage(event) {
   if (event.source !== window || !event.data || event.data.type !== "candidates") {
     return;
   }
+  checkPageChange();
   const isXBridge = isXPage() && event.data.source === X_HOOK_RESPONSE_SOURCE;
   const isThreadsBridge = isThreadsPage() && event.data.source === THREADS_HOOK_RESPONSE_SOURCE;
   if (!isXBridge && !isThreadsBridge) return;
@@ -369,6 +394,7 @@ function normalizeXBridgeCandidate(value) {
     format: kind === "hls" ? "HLS" : "MP4",
     thumbnail: thumbnail && isAllowedXThumbnailUrl(thumbnail) ? thumbnail : "",
     mediaId: String(value.mediaId || "").slice(0, 100),
+    postId: /^\d{6,40}$/.test(String(value.postId || "")) ? String(value.postId) : "",
     contentType: kind === "hls" ? "application/x-mpegURL" : "video/mp4",
     bitrate: Math.max(0, Number(value.bitrate) || 0)
   };
@@ -429,16 +455,10 @@ function normalizeThreadsBridgeCandidate(value) {
     mediaId: String(value.mediaId || "").slice(0, 100),
     contentType: isHls ? "application/x-mpegURL" : "video/mp4",
     bitrate: Math.max(0, Number(value.bitrate) || 0),
-    primary: isCurrentThreadsPost(value.postCode),
+    postId: /^[A-Za-z0-9_-]{1,40}$/.test(String(value.postCode || "")) ? String(value.postCode) : "",
     force: true,
     requiresProbe: !isHls
   };
-}
-
-function isCurrentThreadsPost(postCode) {
-  const code = String(postCode || "");
-  const match = /\/post\/([A-Za-z0-9_-]+)/.exec(location.pathname || "");
-  return Boolean(code && match && match[1] === code);
 }
 
 function isAllowedThreadsMediaUrl(value) {
@@ -491,8 +511,10 @@ function sendCandidates(candidates, force) {
       pageDuration: pagePreview.duration,
       pageVideoWidth: pagePreview.width,
       pageVideoHeight: pagePreview.height,
+      pageChanged: pageChangePending,
       candidates
     });
+    pageChangePending = false;
     result.catch(() => {});
   } catch {
     // The extension context can disappear during reloads or extension updates.

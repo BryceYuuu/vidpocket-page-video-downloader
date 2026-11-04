@@ -20,6 +20,7 @@
 
     <main>
       <ul id="items" class="items"></ul>
+      <button id="show-others" class="show-others" type="button" hidden></button>
       <div id="empty" class="empty" hidden>
         <strong>未发现可下载视频</strong>
         <span>请先播放页面视频，再点击刷新。支持直接 MP4/WebM 和未加密 HLS。</span>
@@ -44,6 +45,7 @@
             <button class="copy" type="button" title="复制链接">复制</button>
             <span class="format"></span>
             <span class="quality"></span>
+            <select class="variant" title="选择清晰度" aria-label="选择清晰度" hidden></select>
             <span class="source"></span>
           </div>
           <div class="details"></div>

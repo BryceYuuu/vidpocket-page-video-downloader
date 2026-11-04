@@ -6,20 +6,19 @@
 
 ## Latest Release
 
-**Current stable version: [v0.5.2](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.2)**
+**Current stable version: [v0.5.3](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/tag/v0.5.3)**
 
 - **Recommended installation:** [Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii)
 - **Latest package and source:** [GitHub Releases](https://github.com/BryceYuuu/vidpocket-page-video-downloader/releases/latest)
 - **Complete version history:** [CHANGELOG.md](CHANGELOG.md)
 
-### What's New in v0.5.2
+### What's New in v0.5.3
 
-- Adds Threads video support on `threads.com` and `threads.net`: the post author and caption as the title, the real cover, duration, and resolution, with the viewed post's own video listed first. Saved files are complete MP4s with audio.
-- Fixes a detection bug (since 0.5.0) that stopped page videos from reaching the popup on any page with a `<video>` element.
-- Never offers partial DASH segments as downloads, so saved files are not silent or truncated.
-- Faster popup: the list appears almost immediately, covers are about 8x smaller and are no longer reloaded while downloads update, and off-screen previews load only when scrolled into view.
-- HLS streams with a separate audio track download video and audio at the same time.
-- Keeps the detected list when Chrome suspends the extension's background worker.
+- On a single X or Threads post, the popup now shows only that post's video. A "show the other videos" button expands the list, with the viewed post kept first.
+- Each video takes one row; its resolutions and formats are in a quality picker that defaults to the best direct MP4.
+- Browsing inside X or Threads no longer piles up every video seen during the session: moving to another post starts the list over.
+
+See [CHANGELOG.md](CHANGELOG.md) for v0.5.2 (Threads support, faster popup) and earlier releases.
 
 ## Features
 
@@ -28,6 +27,7 @@
 - Shows matching thumbnails, duration, format, resolution, source, and readable titles when available.
 - Recovers public X video quality variants when the page player exposes only a temporary `blob:` URL.
 - Detects Threads videos with the post author, caption, cover, and duration, and saves the complete MP4 with audio.
+- On a single X or Threads post, shows only that post's video first; each video is one row with a quality picker.
 - Downloads direct files through Chrome's native downloads API.
 - Processes supported unencrypted HLS/m3u8 streams into MP4 inside the packaged extension.
 - Keeps user-initiated job progress in local extension storage when the popup closes.
