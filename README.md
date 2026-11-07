@@ -1,6 +1,6 @@
 # VidPocket
 
-**VidPocket-网页视频下载** is a local-first Chrome extension for detecting, previewing, and saving directly accessible webpage media.
+**VidPocket** (视频口袋 / *VidPocket-网页视频下载* on the Chrome Web Store) is a local-first Chrome extension that detects, previews, and saves videos from the webpage you are viewing: direct MP4 and WebM files, and unencrypted HLS (m3u8) streams converted to MP4 inside the browser.
 
 [简体中文](README.zh-CN.md) | [Chrome Web Store](https://chromewebstore.google.com/detail/vidpocket/jpafnjdkpppdlnhhfnhaafabgkpfoaii) | [Privacy Policy](PRIVACY.md)
 
@@ -77,6 +77,32 @@ Use VidPocket only for media you own or have permission to save.
 ## Privacy
 
 VidPocket has no analytics, advertising SDK, account system, telemetry service, or hosted backend. Detection, previews, job state, and supported HLS processing remain local to the browser, except for normal requests sent directly to the source media host or X as described in [PRIVACY.md](PRIVACY.md).
+
+## FAQ
+
+### How do I download a video from a webpage?
+
+Open the page and play the video first if the site loads it lazily. Then click the VidPocket toolbar icon, pick a quality, and click **Download**. See [Use](#use).
+
+### Can VidPocket download m3u8 / HLS streams?
+
+Yes. Supported unencrypted HLS (m3u8) streams are converted to MP4 inside the extension, with no helper app and no upload. Encrypted and DRM-protected streams are not supported.
+
+### Does it work with X (Twitter) and Threads videos?
+
+Yes for public posts. On X, VidPocket recovers the available quality variants of public post videos. On Threads, it saves the complete MP4 with audio. Private, protected, and login-restricted media are not supported.
+
+### Can it download YouTube videos?
+
+No. YouTube protected downloads are not supported.
+
+### Why doesn't VidPocket find the video on this page?
+
+Play the video first, because many sites load media only on playback. If it still does not appear, the site may not expose the media directly. VidPocket does not bypass DRM, encryption, paywalls, or login restrictions. See [Limitations](#limitations).
+
+### Does VidPocket upload my data or need an account?
+
+No. There is no account, analytics, or VidPocket backend. Detection and HLS processing run locally in your browser. See [PRIVACY.md](PRIVACY.md).
 
 ## Development
 
